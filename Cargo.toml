@@ -1,0 +1,26 @@
+[package]
+name = "txxxt"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal-based ASCII video call tool"
+license = "MIT"
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Camera
+nokhwa = { version = "0.10", features = ["input-native"] }
+
+# Image processing
+image = "0.25"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime (for future network phase)
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+anyhow = "1"
