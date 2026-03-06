@@ -57,7 +57,8 @@ pub fn render_frame(
 
     // Build grayscale buffer for edge detection if needed.
     let gray: Vec<u8> = if config.mode == RenderMode::Outline {
-        rgb_to_gray(rgb, img_width, img_height)
+        let raw = rgb_to_gray(rgb, img_width, img_height);
+        gaussian_blur_3x3(&raw, img_width, img_height)
     } else {
         vec![]
     };
@@ -67,18 +68,21 @@ pub fn render_frame(
     for row in 0..rows {
         let mut line = Vec::with_capacity(cols as usize);
         for col in 0..cols {
-            // Sample center pixel of this cell.
-            let px = ((col as f32 + 0.5) * cell_w) as u32;
-            let py = ((row as f32 + 0.5) * cell_h) as u32;
-            let px = px.min(img_width - 1);
-            let py = py.min(img_height - 1);
+            // Compute cell pixel bounds.
+            let x0 = ((col as f32) * cell_w) as u32;
+            let y0 = ((row as f32) * cell_h) as u32;
+            let x1 = (((col + 1) as f32) * cell_w) as u32;
+            let y1 = (((row + 1) as f32) * cell_h) as u32;
+            let x1 = x1.min(img_width);
+            let y1 = y1.min(img_height);
 
-            let idx = (py * img_width + px) as usize;
-            let rgb_idx = idx * 3;
+            // RMS average of all pixels in the cell.
+            let (r, g, b) = rms_sample(rgb, img_width, x0, y0, x1, y1);
 
-            let r = rgb[rgb_idx];
-            let g = rgb[rgb_idx + 1];
-            let b = rgb[rgb_idx + 2];
+            // Center pixel for edge detection.
+            let px = ((x0 + x1) / 2).min(img_width - 1);
+            let py = ((y0 + y1) / 2).min(img_height - 1);
+
             let brightness = luminance(r, g, b);
 
             let ch = if brightness < config.brightness_threshold {
@@ -104,6 +108,64 @@ pub fn render_frame(
     }
 
     result
+}
+
+/// RMS average RGB over a rectangular cell region.
+fn rms_sample(rgb: &[u8], w: u32, x0: u32, y0: u32, x1: u32, y1: u32) -> (u8, u8, u8) {
+    if x0 >= x1 || y0 >= y1 {
+        let cx = x0.min(w - 1);
+        let idx = (y0 * w + cx) as usize * 3;
+        return (rgb[idx], rgb[idx + 1], rgb[idx + 2]);
+    }
+    let mut sum_r: f32 = 0.0;
+    let mut sum_g: f32 = 0.0;
+    let mut sum_b: f32 = 0.0;
+    let mut count: f32 = 0.0;
+    for py in y0..y1 {
+        for px in x0..x1 {
+            let idx = (py * w + px) as usize * 3;
+            let r = rgb[idx] as f32;
+            let g = rgb[idx + 1] as f32;
+            let b = rgb[idx + 2] as f32;
+            sum_r += r * r;
+            sum_g += g * g;
+            sum_b += b * b;
+            count += 1.0;
+        }
+    }
+    (
+        (sum_r / count).sqrt() as u8,
+        (sum_g / count).sqrt() as u8,
+        (sum_b / count).sqrt() as u8,
+    )
+}
+
+/// 3×3 Gaussian blur (σ ≈ 6.4, artem-style) on a grayscale buffer.
+fn gaussian_blur_3x3(gray: &[u8], w: u32, h: u32) -> Vec<u8> {
+    // Kernel: [1, 2, 1] / 4  (separable)
+    let len = (w * h) as usize;
+    let mut tmp = vec![0u8; len];
+    let mut out = vec![0u8; len];
+
+    // Horizontal pass
+    for y in 0..h {
+        for x in 0..w {
+            let l = if x > 0 { gray[(y * w + x - 1) as usize] as u32 } else { gray[(y * w + x) as usize] as u32 };
+            let c = gray[(y * w + x) as usize] as u32;
+            let r = if x + 1 < w { gray[(y * w + x + 1) as usize] as u32 } else { c };
+            tmp[(y * w + x) as usize] = ((l + 2 * c + r) / 4) as u8;
+        }
+    }
+    // Vertical pass
+    for y in 0..h {
+        for x in 0..w {
+            let u = if y > 0 { tmp[((y - 1) * w + x) as usize] as u32 } else { tmp[(y * w + x) as usize] as u32 };
+            let c = tmp[(y * w + x) as usize] as u32;
+            let d = if y + 1 < h { tmp[((y + 1) * w + x) as usize] as u32 } else { c };
+            out[(y * w + x) as usize] = ((u + 2 * c + d) / 4) as u8;
+        }
+    }
+    out
 }
 
 /// Convert brightness (0–255) to a character from the charset.
