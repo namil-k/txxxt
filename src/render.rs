@@ -204,6 +204,7 @@ fn rgb_to_gray(rgb: &[u8], w: u32, h: u32) -> Vec<u8> {
 }
 
 /// Sobel edge detection at a single pixel, returning a direction-mapped character.
+#[allow(dead_code)]
 fn edge_char(gray: &[u8], w: u32, h: u32, x: u32, y: u32, threshold: u8) -> char {
     if x == 0 || y == 0 || x >= w - 1 || y >= h - 1 {
         return ' ';
@@ -235,5 +236,78 @@ fn edge_char(gray: &[u8], w: u32, h: u32, x: u32, y: u32, threshold: u8) -> char
         68..=112 => EDGE_CHARS[2],               // │ vertical
         113..=157 => EDGE_CHARS[3],              // ╲ diagonal
         _ => EDGE_CHARS[0],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn luminance_accuracy() {
+        // Pure white: R=255, G=255, B=255 → luminance should be 255.
+        assert_eq!(luminance(255, 255, 255), 255);
+        // Pure black → 0.
+        assert_eq!(luminance(0, 0, 0), 0);
+        // Known value: R=255, G=0, B=0 → 0.2126 * 255 ≈ 54.
+        let l = luminance(255, 0, 0);
+        assert!((50..=58).contains(&l), "expected ~54, got {l}");
+        // R=0, G=255, B=0 → 0.7152 * 255 ≈ 182.
+        let l = luminance(0, 255, 0);
+        assert!((178..=186).contains(&l), "expected ~182, got {l}");
+    }
+
+    #[test]
+    fn rms_sample_solid_color() {
+        // 4×4 solid red image (R=200, G=100, B=50).
+        let w: u32 = 4;
+        let h: u32 = 4;
+        let mut rgb = vec![0u8; (w * h * 3) as usize];
+        for i in 0..(w * h) as usize {
+            rgb[i * 3] = 200;
+            rgb[i * 3 + 1] = 100;
+            rgb[i * 3 + 2] = 50;
+        }
+        let (r, g, b) = rms_sample(&rgb, w, 0, 0, w, h);
+        assert_eq!(r, 200);
+        assert_eq!(g, 100);
+        assert_eq!(b, 50);
+    }
+
+    #[test]
+    fn brightness_to_char_boundaries() {
+        let charset = CharsetName::Standard.chars();
+        // Brightness 0 → first character (darkest).
+        assert_eq!(brightness_to_char(0, charset), charset[0]);
+        // Brightness 255 → last character (brightest).
+        assert_eq!(brightness_to_char(255, charset), *charset.last().unwrap());
+    }
+
+    #[test]
+    fn render_frame_smoke_test() {
+        // 4×4 white image → should produce a 4×4 grid of non-space chars.
+        let w: u32 = 4;
+        let h: u32 = 4;
+        let rgb = vec![255u8; (w * h * 3) as usize];
+        let config = RenderConfig {
+            brightness_threshold: 5,
+            ..Default::default()
+        };
+        let grid = render_frame(&rgb, w, h, 4, 4, &config, None);
+        assert_eq!(grid.len(), 4, "expected 4 rows");
+        assert_eq!(grid[0].len(), 4, "expected 4 cols");
+        // At least some cells should be non-space (bright white image).
+        let non_space = grid.iter().flatten().filter(|c| c.ch != ' ').count();
+        assert!(non_space > 0, "expected non-space chars in a white image");
+    }
+
+    #[test]
+    fn render_frame_zero_size_returns_empty() {
+        let rgb = vec![128u8; 12];
+        let config = RenderConfig::default();
+        let grid = render_frame(&rgb, 4, 1, 0, 4, &config, None);
+        assert!(grid.is_empty());
+        let grid = render_frame(&rgb, 4, 1, 4, 0, &config, None);
+        assert!(grid.is_empty());
     }
 }

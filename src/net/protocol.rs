@@ -57,3 +57,75 @@ pub fn decode_frame(buf: &[u8]) -> Option<(AsciiFrame, usize)> {
     let data = buf[HEADER_LEN..total].to_vec();
     Some((AsciiFrame { width, height, data }, total))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::AsciiCell;
+
+    fn make_grid(width: usize, height: usize, ch: char) -> Vec<Vec<AsciiCell>> {
+        (0..height)
+            .map(|_| {
+                (0..width)
+                    .map(|_| AsciiCell { ch, color: None })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let grid = make_grid(4, 3, 'A');
+        let encoded = encode_frame(&grid);
+        let (frame, consumed) = decode_frame(&encoded).expect("decode failed");
+        assert_eq!(consumed, encoded.len());
+        assert_eq!(frame.width, 4);
+        assert_eq!(frame.height, 3);
+        assert_eq!(frame.data.len(), 12);
+        assert!(frame.data.iter().all(|&b| b == b'A'));
+    }
+
+    #[test]
+    fn empty_frame_roundtrip() {
+        let grid: Vec<Vec<AsciiCell>> = vec![];
+        let encoded = encode_frame(&grid);
+        let (frame, consumed) = decode_frame(&encoded).expect("decode failed");
+        assert_eq!(consumed, encoded.len());
+        assert_eq!(frame.width, 0);
+        assert_eq!(frame.height, 0);
+        assert_eq!(frame.data.len(), 0);
+    }
+
+    #[test]
+    fn partial_buffer_returns_none() {
+        let grid = make_grid(5, 5, 'X');
+        let encoded = encode_frame(&grid);
+        // Trim the last byte — must return None.
+        let partial = &encoded[..encoded.len() - 1];
+        assert!(decode_frame(partial).is_none());
+        // Header-only (4 bytes) — also None.
+        assert!(decode_frame(&encoded[..4]).is_none());
+        // Empty — also None.
+        assert!(decode_frame(&[]).is_none());
+    }
+
+    #[test]
+    fn multi_frame_consecutive_decode() {
+        let grid1 = make_grid(2, 2, 'A');
+        let grid2 = make_grid(3, 1, 'B');
+        let mut buf = encode_frame(&grid1);
+        buf.extend(encode_frame(&grid2));
+
+        let (f1, n1) = decode_frame(&buf).expect("first decode failed");
+        assert_eq!(f1.width, 2);
+        assert_eq!(f1.height, 2);
+        assert!(f1.data.iter().all(|&b| b == b'A'));
+
+        let (f2, n2) = decode_frame(&buf[n1..]).expect("second decode failed");
+        assert_eq!(f2.width, 3);
+        assert_eq!(f2.height, 1);
+        assert!(f2.data.iter().all(|&b| b == b'B'));
+
+        assert_eq!(n1 + n2, buf.len());
+    }
+}

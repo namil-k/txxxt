@@ -39,6 +39,7 @@ impl CameraCapture {
         Ok((decoded.into_raw(), w, h))
     }
 
+    #[allow(dead_code)]
     pub fn resolution(&self) -> (u32, u32) {
         (self.width, self.height)
     }

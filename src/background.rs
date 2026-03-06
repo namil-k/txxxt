@@ -123,3 +123,72 @@ fn dilate_mask(mask: &[bool], w: u32, h: u32, radius: i32) -> Vec<bool> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn solid_rgb(w: u32, h: u32, r: u8, g: u8, b: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; (w * h * 3) as usize];
+        for i in 0..(w * h) as usize {
+            buf[i * 3] = r;
+            buf[i * 3 + 1] = g;
+            buf[i * 3 + 2] = b;
+        }
+        buf
+    }
+
+    #[test]
+    fn not_ready_before_warmup() {
+        let model = BackgroundModel::new(4, 4, 0.05, 25.0);
+        assert!(!model.is_ready());
+    }
+
+    #[test]
+    fn ready_after_warmup() {
+        let mut model = BackgroundModel::new(4, 4, 0.05, 25.0);
+        let frame = solid_rgb(4, 4, 100, 100, 100);
+        for _ in 0..20 {
+            model.update(&frame);
+        }
+        assert!(model.is_ready());
+    }
+
+    #[test]
+    fn static_background_convergence() {
+        let w = 4u32;
+        let h = 4u32;
+        let mut model = BackgroundModel::new(w, h, 0.5, 25.0);
+        // Feed the same bright frame many times with a high alpha (0.5) for fast convergence.
+        let frame = solid_rgb(w, h, 200, 200, 200);
+        let expected_luma = luminance(200, 200, 200) as f32;
+        for _ in 0..60 {
+            model.update(&frame);
+        }
+        // Background values should be close to the input luminance.
+        for &bg in &model.background {
+            let diff = (bg - expected_luma).abs();
+            assert!(diff < 5.0, "background not converged: bg={bg}, expected≈{expected_luma}");
+        }
+    }
+
+    #[test]
+    fn foreground_mask_detects_different_pixels() {
+        let w = 2u32;
+        let h = 2u32;
+        // Initialize model with a dark background.
+        let mut model = BackgroundModel::new(w, h, 0.5, 25.0);
+        let bg_frame = solid_rgb(w, h, 10, 10, 10);
+        for _ in 0..60 {
+            model.update(&bg_frame);
+        }
+        assert!(model.is_ready());
+
+        // Present a very bright foreground frame (large diff from background).
+        let fg_frame = solid_rgb(w, h, 240, 240, 240);
+        let mask = model.foreground_mask(&fg_frame);
+        assert_eq!(mask.len(), (w * h) as usize);
+        // All pixels should be foreground (dilated mask may cover all).
+        assert!(mask.iter().any(|&v| v), "expected at least some foreground pixels");
+    }
+}
