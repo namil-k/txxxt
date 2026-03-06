@@ -12,6 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
 
+use crate::background::BackgroundModel;
 use crate::camera::CameraCapture;
 use crate::render::{render_frame, AsciiCell, RenderConfig, RenderMode};
 
@@ -74,12 +75,28 @@ pub fn run_viewer(mut camera: CameraCapture) -> Result<()> {
     let target_frame_time = Duration::from_millis(100); // ~10 fps
     let mut last_fps_update = Instant::now();
     let mut frames_since_update = 0u32;
+    // Background model for Outline mode foreground detection.
+    let mut bg_model = BackgroundModel::new(640, 480, 0.05, 25.0);
 
     while app.running {
         let frame_start = Instant::now();
 
         // Capture camera frame
         let frame_data = camera.frame_rgb();
+
+        // Update background model and compute foreground mask outside the draw closure
+        // (bg_model requires &mut self which can't be used inside Fn closure).
+        let fg_mask_buf: Option<Vec<bool>> = if let Ok((rgb, w, h)) = &frame_data {
+            bg_model.reset_if_size_changed(*w, *h);
+            bg_model.update(rgb);
+            if app.config.mode == RenderMode::Outline {
+                Some(bg_model.foreground_mask(rgb))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // Draw TUI
         terminal.draw(|f| {
@@ -95,6 +112,8 @@ pub fn run_viewer(mut camera: CameraCapture) -> Result<()> {
 
             // Render ASCII frame if capture succeeded
             if let Ok((rgb, w, h)) = &frame_data {
+                let fg_mask: Option<&[bool]> = fg_mask_buf.as_deref();
+
                 let ascii = render_frame(
                     rgb,
                     *w,
@@ -102,6 +121,7 @@ pub fn run_viewer(mut camera: CameraCapture) -> Result<()> {
                     view_area.width.saturating_sub(2), // account for border
                     view_area.height.saturating_sub(2),
                     &app.config,
+                    fg_mask,
                 );
                 let lines = ascii_to_lines(&ascii);
                 let paragraph = Paragraph::new(lines).block(

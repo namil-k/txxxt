@@ -35,6 +35,9 @@ pub struct AsciiCell {
 
 /// Render an RGB frame to ASCII.
 /// Returns a 2D grid of AsciiCells (rows × cols).
+///
+/// `fg_mask`: optional per-pixel foreground mask (same dimensions as rgb frame).
+/// When provided and mode is Outline, only foreground pixels produce edge characters.
 pub fn render_frame(
     rgb: &[u8],
     img_width: u32,
@@ -42,6 +45,7 @@ pub fn render_frame(
     cols: u16,
     rows: u16,
     config: &RenderConfig,
+    fg_mask: Option<&[bool]>,
 ) -> Vec<Vec<AsciiCell>> {
     let cols = cols as u32;
     let rows = rows as u32;
@@ -85,7 +89,16 @@ pub fn render_frame(
 
             let brightness = luminance(r, g, b);
 
-            let ch = if brightness < config.brightness_threshold {
+            // In Outline mode, skip background pixels entirely.
+            let is_foreground = match fg_mask {
+                Some(mask) => {
+                    let idx = (py * img_width + px) as usize;
+                    mask.get(idx).copied().unwrap_or(true)
+                }
+                None => true,
+            };
+
+            let ch = if brightness < config.brightness_threshold || (config.mode == RenderMode::Outline && !is_foreground) {
                 ' '
             } else {
                 match config.mode {

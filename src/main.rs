@@ -1,3 +1,4 @@
+mod background;
 mod camera;
 mod charsets;
 mod render;
