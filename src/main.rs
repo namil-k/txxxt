@@ -1,6 +1,7 @@
 mod background;
 mod camera;
 mod charsets;
+mod net;
 mod render;
 mod tui;
 
@@ -48,10 +49,20 @@ fn main() -> Result<()> {
             tui::run_viewer(camera)?;
         }
         Some(Commands::Call { addr }) => {
-            eprintln!("Video call to {} — not yet implemented (Phase 2)", addr);
+            let camera = camera::CameraCapture::new(640, 480)?;
+            tokio::runtime::Runtime::new()?.block_on(net::peer::run_caller(
+                &addr,
+                camera,
+                render::RenderConfig::default(),
+            ))?;
         }
         Some(Commands::Listen { port }) => {
-            eprintln!("Listening on port {} — not yet implemented (Phase 2)", port);
+            let camera = camera::CameraCapture::new(640, 480)?;
+            tokio::runtime::Runtime::new()?.block_on(net::peer::run_listener(
+                port,
+                camera,
+                render::RenderConfig::default(),
+            ))?;
         }
     }
 
