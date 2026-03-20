@@ -227,6 +227,30 @@ impl EchoCanceller {
     }
 }
 
+// ─── Resampler ───────────────────────────────────────────────────────────────
+
+/// Standard network sample rate — all audio is sent/received at this rate.
+pub const NET_SAMPLE_RATE: u32 = 48000;
+
+/// Simple linear resampler for converting between sample rates.
+pub fn resample(input: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
+    if from_rate == to_rate || input.is_empty() {
+        return input.to_vec();
+    }
+    let ratio = from_rate as f64 / to_rate as f64;
+    let out_len = (input.len() as f64 / ratio).ceil() as usize;
+    let mut output = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let src_pos = i as f64 * ratio;
+        let idx = src_pos as usize;
+        let frac = src_pos - idx as f64;
+        let a = input[idx.min(input.len() - 1)] as f64;
+        let b = input[(idx + 1).min(input.len() - 1)] as f64;
+        output.push((a + (b - a) * frac) as i16);
+    }
+    output
+}
+
 // ─── Utility ────────────────────────────────────────────────────────────────
 
 /// Downmix multi-channel i16 to mono by averaging.

@@ -255,6 +255,10 @@ pub struct App {
     audio_level_remote: f32,
     /// WebRTC echo canceller.
     echo_canceller: Option<crate::audio::EchoCanceller>,
+    /// Local capture sample rate (for resampling to NET_SAMPLE_RATE).
+    audio_capture_rate: u32,
+    /// Local playback sample rate (for resampling from NET_SAMPLE_RATE).
+    audio_playback_rate: u32,
     /// Relay CREATE status receiver (kind, data).
     relay_rx: Option<mpsc::Receiver<(String, String)>>,
     /// Relay CREATE thread handle.
@@ -311,6 +315,8 @@ impl App {
             audio_level_local: 0.0,
             audio_level_remote: 0.0,
             echo_canceller: None,
+            audio_capture_rate: 48000,
+            audio_playback_rate: 48000,
             relay_rx: None,
             relay_handle: None,
             relay_code: None,
@@ -443,8 +449,9 @@ impl App {
                 (None, None)
             }
         };
+        let mut playback_rate = 48000u32;
         let (audio_playback, audio_playback_tx) = match crate::audio::start_playback() {
-            Ok((stream, tx, _rate)) => (Some(stream), Some(tx)),
+            Ok((stream, tx, rate)) => { playback_rate = rate; (Some(stream), Some(tx)) }
             Err(e) => {
                 self.flash(format!("speaker error: {}", e));
                 (None, None)
@@ -467,8 +474,10 @@ impl App {
         self.panel = None;
         self.audio_capture = audio_capture;
         self.audio_capture_rx = audio_capture_rx;
+        self.audio_capture_rate = capture_rate;
         self.audio_playback = audio_playback;
         self.audio_playback_tx = audio_playback_tx;
+        self.audio_playback_rate = playback_rate;
         self.audio_net_rx = Some(audio_net_rx);
         self.audio_muted = false;
         self.echo_canceller = echo_canceller;
@@ -1157,12 +1166,14 @@ fn run_main_loop(
                         let abs = (s as f32 / 32767.0).abs();
                         if abs > peak { peak = abs; }
                     }
+                    // Resample from network rate to local playback rate.
+                    let resampled = crate::audio::resample(&samples, crate::audio::NET_SAMPLE_RATE, app.audio_playback_rate);
                     // Feed to AEC as render (speaker) reference.
                     if let Some(ref mut ec) = app.echo_canceller {
-                        ec.analyze_render(&samples);
+                        ec.analyze_render(&resampled);
                     }
                     if let Some(ref tx) = app.audio_playback_tx {
-                        let _ = tx.send(samples);
+                        let _ = tx.send(resampled);
                     }
                 }
                 app.audio_level_remote = app.audio_level_remote * 0.7 + peak * 0.3;
@@ -1185,9 +1196,10 @@ fn run_main_loop(
                             let abs = (s as f32 / 32767.0).abs();
                             if abs > peak { peak = abs; }
                         }
-                        // Send if not muted.
+                        // Resample to network rate and send if not muted.
                         if !app.audio_muted && !processed.is_empty() {
-                            let encoded = encode_audio(&processed);
+                            let resampled = crate::audio::resample(&processed, app.audio_capture_rate, crate::audio::NET_SAMPLE_RATE);
+                            let encoded = encode_audio(&resampled);
                             if let Some(ref mut writer) = app.net_writer {
                                 if writer.write_all(&encoded).is_err() {
                                     send_ok = false;
