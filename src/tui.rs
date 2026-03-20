@@ -39,6 +39,10 @@ enum AppMode {
     Listening {
         port: u16,
     },
+    /// Waiting for peer to join relay room.
+    RelayWaiting,
+    /// Joining a relay room.
+    RelayJoining,
 }
 
 /// PIP corner position.
@@ -251,6 +255,14 @@ pub struct App {
     audio_level_remote: f32,
     /// WebRTC echo canceller.
     echo_canceller: Option<crate::audio::EchoCanceller>,
+    /// Relay CREATE status receiver (kind, data).
+    relay_rx: Option<mpsc::Receiver<(String, String)>>,
+    /// Relay CREATE thread handle.
+    relay_handle: Option<std::thread::JoinHandle<Option<(std::net::TcpStream, SocketAddr)>>>,
+    /// Current relay room code.
+    relay_code: Option<String>,
+    /// Relay JOIN stream receiver.
+    relay_join_rx: Option<mpsc::Receiver<(std::net::TcpStream, SocketAddr)>>,
 }
 
 /// A directory entry for the preference file picker.
@@ -299,6 +311,10 @@ impl App {
             audio_level_local: 0.0,
             audio_level_remote: 0.0,
             echo_canceller: None,
+            relay_rx: None,
+            relay_handle: None,
+            relay_code: None,
+            relay_join_rx: None,
         }
     }
 
@@ -458,6 +474,119 @@ impl App {
         self.echo_canceller = echo_canceller;
     }
 
+    /// Create a relay room: connect to relay server, send CREATE, get room code.
+    fn start_relay_create(&mut self) {
+        self.flash("connecting to relay...".into());
+        let (tx, rx) = mpsc::channel();
+
+        let handle = std::thread::spawn(move || -> Option<(std::net::TcpStream, SocketAddr)> {
+            use std::io::{BufRead, BufReader, Write};
+            let mut stream = std::net::TcpStream::connect(RELAY_ADDR).ok()?;
+            stream.set_read_timeout(Some(Duration::from_secs(60))).ok();
+            write!(stream, "CREATE\n").ok()?;
+            stream.flush().ok()?;
+
+            let mut reader = BufReader::new(stream.try_clone().ok()?);
+
+            // Read "ROOM XXXX"
+            let mut line = String::new();
+            reader.read_line(&mut line).ok()?;
+            let code = line.trim().strip_prefix("ROOM ")?.to_string();
+
+            // Send code back to main thread via flash (hacky but works).
+            // We'll wait for "PAIRED" from server.
+            let _ = tx.send(("CODE".to_string(), code.clone()));
+
+            let mut line2 = String::new();
+            reader.read_line(&mut line2).ok()?;
+            if line2.trim() == "PAIRED" {
+                let addr = stream.peer_addr().ok()?;
+                let _ = tx.send(("PAIRED".to_string(), String::new()));
+                Some((stream, addr))
+            } else {
+                None
+            }
+        });
+
+        // Wait briefly for the room code.
+        self.mode = AppMode::RelayWaiting;
+        self.relay_rx = Some(rx);
+        self.relay_handle = Some(handle);
+    }
+
+    /// Join a relay room with a 4-char code.
+    fn start_relay_join(&mut self, code: &str) {
+        let code = code.trim().to_uppercase();
+        self.flash(format!("joining room {}...", code));
+
+        let code_clone = code.clone();
+        let (tx, rx) = mpsc::channel();
+
+        std::thread::spawn(move || -> Option<()> {
+            use std::io::{BufRead, BufReader, Write};
+            let mut stream = std::net::TcpStream::connect(RELAY_ADDR).ok()?;
+            stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+            write!(stream, "JOIN {}\n", code_clone).ok()?;
+            stream.flush().ok()?;
+
+            let mut reader = BufReader::new(stream.try_clone().ok()?);
+            let mut line = String::new();
+            reader.read_line(&mut line).ok()?;
+
+            if line.trim() == "OK" {
+                let addr = stream.peer_addr().ok()?;
+                let _ = tx.send((stream, addr));
+            }
+            None
+        });
+
+        self.mode = AppMode::RelayJoining;
+        self.relay_join_rx = Some(rx);
+    }
+
+    /// Check relay create/join status.
+    fn check_relay(&mut self) {
+        // Check CREATE flow.
+        if let Some(ref rx) = self.relay_rx {
+            if let Ok((kind, data)) = rx.try_recv() {
+                if kind == "CODE" {
+                    let mut copied = false;
+                    if let Ok(mut clip) = arboard::Clipboard::new() {
+                        if clip.set_text(&data).is_ok() {
+                            copied = true;
+                        }
+                    }
+                    if copied {
+                        self.flash(format!("room: {} (copied!)", data));
+                    } else {
+                        self.flash(format!("room: {} — share this code", data));
+                    }
+                    self.relay_code = Some(data);
+                } else if kind == "PAIRED" {
+                    // Peer joined! Now get the stream from the handle.
+                    if let Some(handle) = self.relay_handle.take() {
+                        if let Ok(Some((stream, addr))) = handle.join() {
+                            self.relay_rx = None;
+                            self.relay_code = None;
+                            self.setup_call(stream, addr);
+                            self.flash("relay connected!".into());
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check JOIN flow.
+        if let Some(ref rx) = self.relay_join_rx {
+            if let Ok((stream, addr)) = rx.try_recv() {
+                self.relay_join_rx = None;
+                self.setup_call(stream, addr);
+                self.flash("relay connected!".into());
+            }
+        }
+    }
+
     /// End the current call and return to local mode.
     fn end_call(&mut self) {
         self.mode = AppMode::Local;
@@ -473,6 +602,10 @@ impl App {
         self.audio_playback_tx = None;
         self.audio_net_rx = None;
         self.echo_canceller = None;
+        self.relay_rx = None;
+        self.relay_handle = None;
+        self.relay_code = None;
+        self.relay_join_rx = None;
         self.flash("call ended".into());
     }
 
@@ -648,13 +781,18 @@ impl App {
                 }
             }
             Panel::Connect => {
-                // Text input for IP:port address.
+                // Text input for room code or IP:port address.
                 match key.code {
                     KeyCode::Enter => {
-                        let addr = self.connect_input.trim().to_string();
-                        if !addr.is_empty() {
+                        let input = self.connect_input.trim().to_string();
+                        if !input.is_empty() {
                             self.panel = None;
-                            self.start_call(&addr);
+                            // If 4 chars and no dots/colons → relay code.
+                            if input.len() <= 6 && !input.contains('.') && !input.contains(':') {
+                                self.start_relay_join(&input);
+                            } else {
+                                self.start_call(&input);
+                            }
                         }
                     }
                     KeyCode::Esc | KeyCode::Char('c') if self.connect_input.is_empty() => {
@@ -685,9 +823,10 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
-                // In call/listening mode: end call. In local mode: quit.
+                // In call/listening/relay mode: end call. In local mode: quit.
                 match self.mode {
-                    AppMode::Call { .. } | AppMode::Listening { .. } => {
+                    AppMode::Call { .. } | AppMode::Listening { .. }
+                    | AppMode::RelayWaiting | AppMode::RelayJoining => {
                         self.end_call();
                     }
                     AppMode::Local => {
@@ -704,6 +843,11 @@ impl App {
             KeyCode::Char('l') => {
                 if self.mode == AppMode::Local {
                     self.start_listen(7878);
+                }
+            }
+            KeyCode::Char('r') => {
+                if self.mode == AppMode::Local {
+                    self.start_relay_create();
                 }
             }
             KeyCode::Char('v') => {
@@ -949,6 +1093,9 @@ fn run_main_loop(
         // Check if a listener accepted a connection.
         app.check_listener();
 
+        // Check relay status.
+        app.check_relay();
+
         // Drain latest remote frame from channel (non-blocking).
         if let Some(ref rx) = app.remote_rx {
             while let Ok(grid) = rx.try_recv() {
@@ -1084,6 +1231,7 @@ fn run_main_loop(
         let pref_dir_cursor = app.pref_dir_cursor;
         let connect_input = app.connect_input.clone();
         let app_mode = app.mode.clone();
+        let relay_code = app.relay_code.clone();
         let pip_corner = app.pip_corner;
         let pip_scale = PIP_SCALES[app.pip_scale_idx] as u16;
         let audio_muted = app.audio_muted;
@@ -1115,13 +1263,22 @@ fn run_main_loop(
             let status_area = chunks[2];
 
             match &app_mode {
-                AppMode::Local | AppMode::Listening { .. } => {
+                AppMode::Local | AppMode::Listening { .. }
+                | AppMode::RelayWaiting | AppMode::RelayJoining => {
                     // Single video panel.
                     match ascii_ref {
                         Some(grid) => {
                             let lines = ascii_to_lines(grid);
                             let title = match &app_mode {
                                 AppMode::Listening { port } => format!(" txxxt — listening on :{} ", port),
+                                AppMode::RelayWaiting => {
+                                    if let Some(ref code) = relay_code {
+                                        format!(" txxxt — room: {} (waiting...) ", code)
+                                    } else {
+                                        " txxxt — creating room... ".to_string()
+                                    }
+                                }
+                                AppMode::RelayJoining => " txxxt — joining room... ".to_string(),
                                 _ => " txxxt ".to_string(),
                             };
                             let p = Paragraph::new(lines).block(
@@ -1282,8 +1439,16 @@ fn run_main_loop(
             let color_label = if color_on { "COLOR" } else { "MONO" };
             let bg_label = if bg_on { " BG" } else { "" };
             let mode_info = match &app_mode {
-                AppMode::Local => "[c]all [l]isten".to_string(),
+                AppMode::Local => "[c]onnect [r]oom [l]isten".to_string(),
                 AppMode::Listening { port } => format!("listening :{} | [q]cancel", port),
+                AppMode::RelayWaiting => {
+                    if let Some(ref code) = relay_code {
+                        format!("room: {} — waiting for peer | [q]cancel", code)
+                    } else {
+                        "creating room... | [q]cancel".to_string()
+                    }
+                }
+                AppMode::RelayJoining => "joining room... | [q]cancel".to_string(),
                 AppMode::Call { peer_addr } => {
                     let mic = if audio_muted { "🔇" } else { "🎙" };
                     let cam = if camera_hidden { "📷❌" } else { "📷" };
@@ -1670,6 +1835,9 @@ fn ascii_to_lines(grid: &[Vec<AsciiCell>]) -> Vec<Line<'static>> {
 
 use std::net::SocketAddr;
 use crate::net::protocol::{encode_frame, encode_audio, decode_message, frame_to_grid, Message};
+
+/// Relay server address.
+const RELAY_ADDR: &str = "ballast.proxy.rlwy.net:32623";
 
 /// CLI entry point: connect to peer, then run viewer in call mode.
 pub fn run_call(
