@@ -27,6 +27,9 @@ jobs:
             name: txxxt-windows-x86_64
 
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
@@ -63,8 +66,8 @@ jobs:
           BUILD_TARGET: ${{ matrix.target }}
           ARTIFACT_NAME: ${{ matrix.name }}
         run: |
-          cp "target/${env:BUILD_TARGET}/release/txxxt.exe" "${env:ARTIFACT_NAME}.exe"
-          Compress-Archive -Path "${env:ARTIFACT_NAME}.exe" -DestinationPath "${env:ARTIFACT_NAME}.zip"
+          cp "target/${BUILD_TARGET}/release/txxxt.exe" "${ARTIFACT_NAME}.exe"
+          7z a "${ARTIFACT_NAME}.zip" "${ARTIFACT_NAME}.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
