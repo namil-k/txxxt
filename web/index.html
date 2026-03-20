@@ -61,6 +61,10 @@
   .no-code { text-align: center; }
   .no-code h2 { font-size: 1.5rem; color: #fff; margin-bottom: 1rem; }
   .no-code p { color: #888; margin-bottom: 1rem; line-height: 1.6; }
+  .links { margin-top: 1.5rem; font-size: 0.8rem; }
+  .links a { color: #666; text-decoration: none; transition: color 0.2s; }
+  .links a:hover { color: #00ff88; }
+  .links span { color: #333; margin: 0 0.5rem; }
 </style>
 </head>
 <body>
@@ -85,10 +89,15 @@
       <div class="step">
         <div class="step-label">first time? install first:</div>
         <pre id="install-cmd" onclick="copyInstall()">
-          <code>$ curl -fsSL ...install.sh | bash</code>
+          <code id="install-cmd-text"></code>
           <span class="copied" id="install-copied">copied!</span>
         </pre>
       </div>
+    </div>
+    <div class="links">
+      <a href="https://github.com/namil-k/txxxt">GitHub</a>
+      <span>·</span>
+      <a href="https://github.com/namil-k/txxxt/releases">Releases</a>
     </div>
   </div>
 
@@ -98,10 +107,15 @@
       <h2>txxxt</h2>
       <p>ascii webcam viewer &amp; video call<br>in your terminal</p>
       <pre id="landing-install" onclick="copyInstall()">
-        <code>$ curl -fsSL ...install.sh | bash</code>
+        <code id="landing-cmd-text"></code>
         <span class="copied" id="landing-copied">copied!</span>
       </pre>
       <p style="color:#666;font-size:0.8rem;">then run: txxxt</p>
+      <div class="links">
+        <a href="https://github.com/namil-k/txxxt">GitHub</a>
+        <span>·</span>
+        <a href="https://github.com/namil-k/txxxt/releases">Releases</a>
+      </div>
     </div>
   </div>
 </div>
@@ -111,12 +125,16 @@ var INSTALL_CMD = 'curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/ma
 var path = window.location.pathname.replace(/^\/+/, '').replace(/\/+$/, '');
 var code = (path && /^[A-Za-z0-9]{2,8}$/.test(path)) ? path.toUpperCase() : null;
 
+var INSTALL_DISPLAY = '$ curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/main/install.sh | bash';
+
 if (code) {
   document.getElementById('room-page').style.display = 'block';
   document.getElementById('room-code').textContent = code;
   document.getElementById('join-cmd-text').textContent = '$ txxxt ' + code;
+  document.getElementById('install-cmd-text').textContent = INSTALL_DISPLAY;
 } else {
   document.getElementById('landing-page').style.display = 'block';
+  document.getElementById('landing-cmd-text').textContent = INSTALL_DISPLAY;
 }
 
 function flashCopied(id) {
