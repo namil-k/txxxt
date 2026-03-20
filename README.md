@@ -1,60 +1,108 @@
-# txxxt
+<p align="center">
+  <h1 align="center">txxxt</h1>
+  <p align="center">
+    ASCII webcam viewer & video call in your terminal
+    <br />
+    <a href="https://txxxt.me">txxxt.me</a> · <a href="https://github.com/kimnam1/txxxt/releases">Releases</a>
+  </p>
+</p>
 
-ASCII webcam viewer & video call in your terminal.
+<p align="center">
+  <a href="https://github.com/kimnam1/txxxt/releases/latest"><img src="https://img.shields.io/github/v/release/kimnam1/txxxt?style=flat-square" alt="Latest Release"></a>
+  <a href="https://github.com/kimnam1/txxxt/blob/main/LICENSE"><img src="https://img.shields.io/github/license/kimnam1/txxxt?style=flat-square" alt="License"></a>
+  <a href="https://github.com/kimnam1/txxxt/stargazers"><img src="https://img.shields.io/github/stars/kimnam1/txxxt?style=flat-square" alt="Stars"></a>
+</p>
 
-Turn your webcam into real-time ASCII art. Call your friends over the network — no server, no account, just a terminal.
+---
 
-## Install
+Turn your webcam into real-time ASCII art. Call your friends — no account, just a terminal.
+
+## Quick Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kimnam1/txxxt/main/install.sh | sh
-```
+# Install
+curl -fsSL https://raw.githubusercontent.com/kimnam1/txxxt/main/install.sh | bash
 
-Or build from source:
-
-```bash
-cargo install --git https://github.com/kimnam1/txxxt
-```
-
-## Usage
-
-```bash
+# Run
 txxxt
 ```
 
-That's it. Your webcam opens as ASCII art in the terminal.
+## Features
 
-### Video call
+- **ASCII webcam viewer** — 6 visual styles (blocks, dots, outline, letters, digits, standard)
+- **Video call** — relay-based, works across any network
+- **Audio** — mic + speaker with echo cancellation
+- **Room codes** — press `r`, share a 6-char code, done
+- **Shareable links** — `txxxt.me/CODE` landing page for easy joining
+- **PIP layout** — FaceTime-style with movable, resizable picture-in-picture
+- **Auto-update** — checks for updates on startup
+- **Cross-platform** — macOS (ARM64), Linux (x86_64)
 
-From inside the app:
+## Video Call
 
-- Press `l` to listen — your address is copied to clipboard, send it to a friend
-- Press `c` to call — paste the address your friend sent you
+**Create a room:**
 
-Or from the command line:
+Press `r` in the app. A link like `txxxt.me/ABC123` is copied to your clipboard. Share it with a friend.
+
+**Join a room:**
 
 ```bash
-txxxt listen              # wait for incoming call
-txxxt call 192.168.1.5:7878   # connect to a friend
+txxxt ABC123
 ```
+
+Or press `c` in the app and type the code.
+
+**Direct connection** (same network):
+
+Press `l` to listen, `c` to connect with IP:port.
 
 ## Keybindings
 
+### General
+
 | Key | Action |
 |-----|--------|
-| `v` | Switch visual style (standard, letters, dots, digits, blocks, outline) |
+| `v` | Switch visual style |
 | `f` | Settings (color, bg removal, mirror, brightness) |
 | `,` | Preferences (save folder) |
-| `y` | Save snapshot to file |
-| `c` | Connect to a peer |
-| `l` | Listen for incoming call |
-| `q` | Quit (or hang up during a call) |
+| `y` | Save snapshot |
+| `q` | Quit / hang up |
+
+### Call
+
+| Key | Action |
+|-----|--------|
+| `r` | Create relay room |
+| `c` | Connect (code or IP:port) |
+| `l` | Listen for direct connection |
+| `m` | Mute / unmute mic |
+| `h` | Hide / show camera |
+| `p` | Move PIP (cycles corners) |
+| `+` / `-` | Resize PIP |
+
+## CLI
+
+```bash
+txxxt                  # open webcam viewer
+txxxt ABC123           # join room directly
+txxxt update           # update to latest version
+txxxt call IP:PORT     # direct call
+txxxt listen           # listen for direct call
+```
+
+## Build from Source
+
+```bash
+git clone https://github.com/kimnam1/txxxt.git
+cd txxxt
+cargo build --release
+```
 
 ## Requirements
 
 - A terminal with Unicode support
 - A webcam
-- macOS, Linux, or Windows
+- macOS (ARM64) or Linux (x86_64)
 
 ## License
 
