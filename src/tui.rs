@@ -41,6 +41,39 @@ enum AppMode {
     },
 }
 
+/// PIP corner position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipCorner {
+    TopRight,
+    TopLeft,
+    BottomRight,
+    BottomLeft,
+}
+
+impl PipCorner {
+    fn next(self) -> Self {
+        match self {
+            PipCorner::TopRight => PipCorner::TopLeft,
+            PipCorner::TopLeft => PipCorner::BottomLeft,
+            PipCorner::BottomLeft => PipCorner::BottomRight,
+            PipCorner::BottomRight => PipCorner::TopRight,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            PipCorner::TopRight => "top-right",
+            PipCorner::TopLeft => "top-left",
+            PipCorner::BottomRight => "bottom-right",
+            PipCorner::BottomLeft => "bottom-left",
+        }
+    }
+}
+
+/// PIP size as a fraction of the screen.
+const PIP_SCALES: &[u8] = &[15, 20, 25, 33, 50];
+const PIP_DEFAULT_SCALE_IDX: usize = 2; // 25%
+
 /// Settings panel items.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsItem {
@@ -191,6 +224,10 @@ pub struct App {
     listener_handle: Option<std::thread::JoinHandle<Option<(std::net::TcpStream, SocketAddr)>>>,
     /// Channel for listener result.
     listener_rx: Option<mpsc::Receiver<(std::net::TcpStream, SocketAddr)>>,
+    /// PIP corner position during call.
+    pip_corner: PipCorner,
+    /// PIP size index into PIP_SCALES.
+    pip_scale_idx: usize,
 }
 
 /// A directory entry for the preference file picker.
@@ -227,6 +264,8 @@ impl App {
             net_writer: None,
             listener_handle: None,
             listener_rx: None,
+            pip_corner: PipCorner::TopRight,
+            pip_scale_idx: PIP_DEFAULT_SCALE_IDX,
         }
     }
 
@@ -599,6 +638,24 @@ impl App {
             KeyCode::Char('y') => {
                 return Some(ExportAction::Save);
             }
+            // PIP controls (call mode only).
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                if matches!(self.mode, AppMode::Call { .. }) {
+                    if self.pip_scale_idx + 1 < PIP_SCALES.len() {
+                        self.pip_scale_idx += 1;
+                    }
+                }
+            }
+            KeyCode::Char('-') => {
+                if matches!(self.mode, AppMode::Call { .. }) {
+                    self.pip_scale_idx = self.pip_scale_idx.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('p') => {
+                if matches!(self.mode, AppMode::Call { .. }) {
+                    self.pip_corner = self.pip_corner.next();
+                }
+            }
             _ => {}
         }
         None
@@ -870,6 +927,8 @@ fn run_main_loop(
         let pref_dir_cursor = app.pref_dir_cursor;
         let connect_input = app.connect_input.clone();
         let app_mode = app.mode.clone();
+        let pip_corner = app.pip_corner;
+        let pip_scale = PIP_SCALES[app.pip_scale_idx] as u16;
 
         terminal.draw(|f| {
             let area = f.area();
@@ -938,11 +997,27 @@ fn run_main_loop(
                         }
                     }
 
-                    // Local: PIP overlay in top-right corner (~1/4 size).
-                    let pip_w = (video_area.width / 4).max(16);
-                    let pip_h = (video_area.height / 4).max(6);
-                    let pip_x = video_area.x + video_area.width - pip_w - 1;
-                    let pip_y = video_area.y + 1;
+                    // Local: PIP overlay — size and position configurable.
+                    let pip_w = (video_area.width * pip_scale / 100).max(16);
+                    let pip_h = (video_area.height * pip_scale / 100).max(6);
+                    let (pip_x, pip_y) = match pip_corner {
+                        PipCorner::TopRight => (
+                            video_area.x + video_area.width - pip_w - 1,
+                            video_area.y + 1,
+                        ),
+                        PipCorner::TopLeft => (
+                            video_area.x + 1,
+                            video_area.y + 1,
+                        ),
+                        PipCorner::BottomRight => (
+                            video_area.x + video_area.width - pip_w - 1,
+                            video_area.y + video_area.height - pip_h - 1,
+                        ),
+                        PipCorner::BottomLeft => (
+                            video_area.x + 1,
+                            video_area.y + video_area.height - pip_h - 1,
+                        ),
+                    };
                     let pip_rect = Rect::new(pip_x, pip_y, pip_w, pip_h);
 
                     f.render_widget(Clear, pip_rect);
@@ -956,15 +1031,14 @@ fn run_main_loop(
                                 Block::default()
                                     .borders(Borders::ALL)
                                     .border_type(BorderType::Rounded)
-                                    .title(" me ")
-                                    .style(Style::default().bg(Color::DarkGray)),
+                                    .title(" me "),
                             );
                             f.render_widget(p, pip_rect);
                         }
                         None => {
                             let p = Paragraph::new("no cam")
                                 .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)
-                                    .title(" me ").style(Style::default().bg(Color::DarkGray)));
+                                    .title(" me "));
                             f.render_widget(p, pip_rect);
                         }
                     }
@@ -989,7 +1063,10 @@ fn run_main_loop(
             let mode_info = match &app_mode {
                 AppMode::Local => "[c]all [l]isten".to_string(),
                 AppMode::Listening { port } => format!("listening :{} | [q]cancel", port),
-                AppMode::Call { peer_addr } => format!("peer: {} | [q]hangup", peer_addr),
+                AppMode::Call { peer_addr } => format!(
+                    "{} | [p]ip:{} [+/-]{}% | [q]hangup",
+                    peer_addr, pip_corner.label(), pip_scale,
+                ),
             };
             let status = format!(
                 " {} | {}{} | FPS: {:.0} | {} | [v]style [f]settings [y]save",
