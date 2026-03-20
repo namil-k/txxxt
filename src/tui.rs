@@ -176,7 +176,7 @@ impl VisualStyle {
     }
 }
 
-const FLASH_DISPLAY_SECS: u64 = 2;
+const FLASH_DISPLAY_SECS: u64 = 5;
 
 /// Action returned from key handler that needs resources from main loop.
 #[derive(Debug)]
