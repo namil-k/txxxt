@@ -43,6 +43,12 @@ trap 'rm -rf "${TMP_DIR}"' EXIT
 curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/${ASSET}"
 tar xzf "${TMP_DIR}/${ASSET}" -C "${TMP_DIR}"
 
+# Ensure install directory exists
+if [ ! -d "${INSTALL_DIR}" ]; then
+  echo "  Creating ${INSTALL_DIR}"
+  sudo mkdir -p "${INSTALL_DIR}"
+fi
+
 # Install
 if [ -w "${INSTALL_DIR}" ]; then
   mv "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
