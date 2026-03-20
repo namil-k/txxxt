@@ -16,7 +16,7 @@
     align-items: center;
   }
   .container {
-    max-width: 600px;
+    max-width: 720px;
     width: 100%;
     padding: 2rem;
   }
@@ -57,15 +57,16 @@
     overflow-x: auto;
   }
   .cmd:hover { border-color: #00ff88; }
-  .cmd code { color: #00ff88; font-size: 0.85rem; flex: 1; }
+  .cmd code { color: #00ff88; font-size: 0.85rem; flex: 1; min-width: 0; overflow-x: auto; }
   .copy-btn {
-    color: #555;
-    font-size: 1rem;
     flex-shrink: 0;
-    transition: color 0.2s;
+    width: 16px;
+    height: 16px;
+    opacity: 0.3;
+    transition: opacity 0.2s;
     user-select: none;
   }
-  .cmd:hover .copy-btn { color: #888; }
+  .cmd:hover .copy-btn { opacity: 0.6; }
   .no-code { text-align: center; }
   .no-code h2 { font-size: 1.5rem; color: #fff; margin-bottom: 1rem; }
   .no-code p { color: #888; margin-bottom: 1rem; line-height: 1.6; }
@@ -91,14 +92,14 @@
         <div class="step-label">if txxxt is installed:</div>
         <div class="cmd" id="join-cmd">
           <code id="join-cmd-text"></code>
-          <span class="copy-btn" id="join-icon">&#x2398;</span>
+          <svg class="copy-btn" id="join-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
         </div>
       </div>
       <div class="step">
         <div class="step-label">first time? install first:</div>
         <div class="cmd" id="install-cmd">
           <code id="install-cmd-text"></code>
-          <span class="copy-btn" id="install-icon">&#x2398;</span>
+          <svg class="copy-btn" id="install-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
         </div>
       </div>
     </div>
@@ -116,7 +117,7 @@
       <p>ascii webcam viewer &amp; video call<br>in your terminal</p>
       <div class="cmd" id="landing-cmd">
         <code id="landing-cmd-text"></code>
-        <span class="copy-btn" id="landing-icon">&#x2398;</span>
+        <svg class="copy-btn" id="landing-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
       </div>
       <p style="color:#666;font-size:0.8rem;margin-top:1rem;">then run: txxxt</p>
       <div class="links">
@@ -146,14 +147,19 @@ if (code) {
   document.getElementById('landing-cmd').onclick = function() { copyAndFlash(INSTALL_CMD, 'landing-icon'); };
 }
 
+var COPY_SVG = '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>';
+var CHECK_SVG = '<path d="M5 12l5 5L20 7" stroke-linecap="round" stroke-linejoin="round"/>';
+
 function copyAndFlash(text, iconId) {
   navigator.clipboard.writeText(text);
   var el = document.getElementById(iconId);
-  el.textContent = '\u2713';
-  el.style.color = '#00ff88';
+  el.innerHTML = CHECK_SVG;
+  el.style.opacity = '1';
+  el.style.stroke = '#00ff88';
   setTimeout(function() {
-    el.innerHTML = '&#x2398;';
-    el.style.color = '';
+    el.innerHTML = COPY_SVG;
+    el.style.opacity = '';
+    el.style.stroke = '';
   }, 1500);
 }
 </script>
