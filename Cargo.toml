@@ -19,9 +19,6 @@ image = "0.25"
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Async runtime (for future network phase)
-tokio = { version = "1", features = ["full"] }
-
 # Error handling
 anyhow = "1"
 

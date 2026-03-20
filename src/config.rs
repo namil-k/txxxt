@@ -8,7 +8,7 @@ use crate::render::RenderConfig;
 use crate::tui::VisualStyle;
 
 /// Persisted user settings.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserConfig {
     #[serde(default = "default_false")]
     pub color: bool,
@@ -20,6 +20,9 @@ pub struct UserConfig {
     pub brightness_threshold: u8,
     #[serde(default = "default_style")]
     pub style: String,
+    /// Custom save directory. None = ~/Downloads.
+    #[serde(default)]
+    pub save_dir: Option<String>,
 }
 
 fn default_false() -> bool {
@@ -43,13 +46,14 @@ impl Default for UserConfig {
             mirror: true,
             brightness_threshold: 10,
             style: "standard".into(),
+            save_dir: None,
         }
     }
 }
 
 impl UserConfig {
-    /// Build a UserConfig from the current RenderConfig state.
-    pub fn from_render_config(config: &RenderConfig) -> Self {
+    /// Build a UserConfig from the current RenderConfig state and existing preferences.
+    pub fn from_render_config(config: &RenderConfig, prev: &UserConfig) -> Self {
         let style = VisualStyle::from_config(config);
         Self {
             color: config.color,
@@ -57,6 +61,7 @@ impl UserConfig {
             mirror: config.mirror,
             brightness_threshold: config.brightness_threshold,
             style: style.label().to_string(),
+            save_dir: prev.save_dir.clone(),
         }
     }
 

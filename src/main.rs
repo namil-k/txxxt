@@ -15,6 +15,10 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+
+    /// Use a dummy test pattern instead of the real camera (for testing P2P locally)
+    #[arg(long)]
+    dummy: bool,
 }
 
 #[derive(Subcommand)]
@@ -35,36 +39,32 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    #[cfg(target_os = "macos")]
+    nokhwa::nokhwa_initialize(|granted| {
+        if !granted {
+            eprintln!("Camera permission denied");
+            std::process::exit(1);
+        }
+    });
+
+    let camera = if cli.dummy {
+        camera::CameraCapture::dummy(640, 480)
+    } else {
+        camera::CameraCapture::new(640, 480)?
+    };
+
     match cli.command {
         None => {
-            // Default: local ASCII webcam viewer
-            println!("Starting txxxt webcam viewer...");
-            #[cfg(target_os = "macos")]
-            nokhwa::nokhwa_initialize(|granted| {
-                if !granted {
-                    eprintln!("Camera permission denied");
-                    std::process::exit(1);
-                }
-            });
-
-            let camera = camera::CameraCapture::new(640, 480)?;
+            // Default: local ASCII webcam viewer (can start calls from TUI).
             tui::run_viewer(camera)?;
         }
         Some(Commands::Call { addr }) => {
-            let camera = camera::CameraCapture::new(640, 480)?;
-            tokio::runtime::Runtime::new()?.block_on(net::peer::run_caller(
-                &addr,
-                camera,
-                render::RenderConfig::default(),
-            ))?;
+            // Connect directly from CLI, then enter TUI.
+            net::peer::run_caller(&addr, camera)?;
         }
         Some(Commands::Listen { port }) => {
-            let camera = camera::CameraCapture::new(640, 480)?;
-            tokio::runtime::Runtime::new()?.block_on(net::peer::run_listener(
-                port,
-                camera,
-                render::RenderConfig::default(),
-            ))?;
+            // Listen from CLI, then enter TUI on connection.
+            net::peer::run_listener(port, camera)?;
         }
     }
 

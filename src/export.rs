@@ -18,7 +18,8 @@ pub fn grid_to_text(grid: &[Vec<AsciiCell>]) -> String {
     out
 }
 
-/// Convert grid to ANSI 24-bit colored text.
+/// Convert grid to ANSI 24-bit colored text (reserved for future terminal-aware export).
+#[allow(dead_code)]
 /// Consecutive cells with the same color share a single escape prefix.
 pub fn grid_to_ansi(grid: &[Vec<AsciiCell>]) -> String {
     let mut out = String::new();
@@ -51,22 +52,16 @@ pub fn grid_to_ansi(grid: &[Vec<AsciiCell>]) -> String {
     out
 }
 
-/// Copy grid content to system clipboard.
-/// If `color` is true and grid has color data, copies ANSI-colored text.
+/// Copy grid content to system clipboard as plain text.
+#[allow(dead_code)]
 pub fn yank_to_clipboard(
     clipboard: &mut arboard::Clipboard,
     grid: &[Vec<AsciiCell>],
-    color: bool,
 ) -> bool {
     if grid.is_empty() {
         return false;
     }
-    let text = if color {
-        grid_to_ansi(grid)
-    } else {
-        grid_to_text(grid)
-    };
-    clipboard.set_text(text).is_ok()
+    clipboard.set_text(grid_to_text(grid)).is_ok()
 }
 
 /// Generate a timestamp string for filenames: YYYYMMDD_HHMMSS
@@ -119,30 +114,100 @@ fn is_leap(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
-/// Output directory: ~/Downloads/txxxt/
+/// Output directory: ~/Downloads/ (default), configurable in the future.
 fn output_dir() -> Option<PathBuf> {
-    dirs::download_dir().map(|d| d.join("txxxt"))
+    dirs::download_dir()
 }
 
-/// Save grid to a file in ~/Downloads/txxxt/.
-/// Returns the filename on success.
-pub fn save_to_file(grid: &[Vec<AsciiCell>], color: bool) -> Result<String, String> {
+/// Convert grid to an HTML document with colored spans.
+pub fn grid_to_html(grid: &[Vec<AsciiCell>]) -> String {
+    let mut out = String::from(
+        "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">\
+         <title>txxxt</title></head>\n\
+         <body style=\"margin:0;padding:16px;background:#000\">\n\
+         <pre style=\"font-family:'Courier New',monospace;font-size:14px;line-height:1.1;color:#ccc\">\n",
+    );
+    for (i, row) in grid.iter().enumerate() {
+        let mut current_color: Option<(u8, u8, u8)> = None;
+        for cell in row {
+            // HTML-escape the character
+            let ch_str = match cell.ch {
+                '<' => "&lt;".to_string(),
+                '>' => "&gt;".to_string(),
+                '&' => "&amp;".to_string(),
+                '"' => "&quot;".to_string(),
+                c => c.to_string(),
+            };
+            match (cell.color, current_color) {
+                (Some(rgb), cur) if Some(rgb) != cur => {
+                    if current_color.is_some() {
+                        out.push_str("</span>");
+                    }
+                    out.push_str(&format!(
+                        "<span style=\"color:rgb({},{},{})\">",
+                        rgb.0, rgb.1, rgb.2
+                    ));
+                    current_color = Some(rgb);
+                }
+                (None, Some(_)) => {
+                    out.push_str("</span>");
+                    current_color = None;
+                }
+                _ => {}
+            }
+            out.push_str(&ch_str);
+        }
+        if current_color.is_some() {
+            out.push_str("</span>");
+        }
+        if i + 1 < grid.len() {
+            out.push('\n');
+        }
+    }
+    out.push_str("\n</pre>\n</body></html>\n");
+    out
+}
+
+/// Save grid as HTML.
+/// Uses custom `save_dir` if provided, otherwise ~/Downloads.
+/// Returns the display path string on success.
+pub fn save_to_file(grid: &[Vec<AsciiCell>], save_dir: Option<&str>) -> Result<String, String> {
     if grid.is_empty() {
         return Err("No frame to save".into());
     }
 
-    let dir = output_dir().ok_or("Cannot determine Downloads directory")?;
+    let dir = match save_dir {
+        Some(d) => {
+            let expanded = if d.starts_with('~') {
+                if let Some(home) = dirs::home_dir() {
+                    PathBuf::from(d.replacen('~', home.to_str().unwrap_or("~"), 1))
+                } else {
+                    PathBuf::from(d)
+                }
+            } else {
+                PathBuf::from(d)
+            };
+            expanded
+        }
+        None => output_dir().ok_or("Cannot determine Downloads directory")?,
+    };
     fs::create_dir_all(&dir).map_err(|e| format!("Cannot create directory: {}", e))?;
 
-    let filename = format!("txxxt_{}.txt", timestamp());
+    let filename = format!("txxxt_{}.html", timestamp());
     let path = dir.join(&filename);
 
-    let content = if color {
-        grid_to_ansi(grid)
-    } else {
-        grid_to_text(grid)
-    };
+    fs::write(&path, grid_to_html(grid)).map_err(|e| format!("Write failed: {}", e))?;
 
-    fs::write(&path, content).map_err(|e| format!("Write failed: {}", e))?;
-    Ok(filename)
+    // Return display path with ~/Downloads shorthand.
+    let display = path
+        .to_str()
+        .map(|s| {
+            if let Some(home) = dirs::home_dir().and_then(|h| h.to_str().map(String::from)) {
+                s.replace(&home, "~")
+            } else {
+                s.to_string()
+            }
+        })
+        .unwrap_or(filename);
+    Ok(display)
 }
