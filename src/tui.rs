@@ -6,17 +6,134 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Style};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Terminal;
 
 use crate::background::BackgroundModel;
 use crate::camera::CameraCapture;
+use crate::charsets::CharsetName;
 use crate::render::{render_frame, AsciiCell, RenderConfig, RenderMode};
 
-const COPIED_DISPLAY_SECS: u64 = 1;
+/// Which overlay panel is currently open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panel {
+    StylePicker,
+    Settings,
+    Export,
+}
+
+/// Settings panel items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsItem {
+    Color,
+    Background,
+    Mirror,
+    Brightness,
+}
+
+impl SettingsItem {
+    const ALL: &'static [SettingsItem] = &[
+        SettingsItem::Color,
+        SettingsItem::Background,
+        SettingsItem::Mirror,
+        SettingsItem::Brightness,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            SettingsItem::Color => "color",
+            SettingsItem::Background => "background",
+            SettingsItem::Mirror => "mirror",
+            SettingsItem::Brightness => "bright threshold",
+        }
+    }
+}
+
+/// Export panel items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExportItem {
+    YankClipboard,
+    SaveFile,
+}
+
+impl ExportItem {
+    const ALL: &'static [ExportItem] = &[
+        ExportItem::YankClipboard,
+        ExportItem::SaveFile,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            ExportItem::YankClipboard => "yank to clipboard",
+            ExportItem::SaveFile => "save to file",
+        }
+    }
+}
+
+/// Unified visual style: charsets + outline in one list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualStyle {
+    Charset(CharsetName),
+    Outline,
+}
+
+impl VisualStyle {
+    /// All available styles in display order.
+    pub const ALL: &'static [VisualStyle] = &[
+        VisualStyle::Charset(CharsetName::Standard),
+        VisualStyle::Charset(CharsetName::Letters),
+        VisualStyle::Charset(CharsetName::Dots),
+        VisualStyle::Charset(CharsetName::Digits),
+        VisualStyle::Charset(CharsetName::Blocks),
+        VisualStyle::Outline,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            VisualStyle::Charset(cs) => cs.label(),
+            VisualStyle::Outline => "outline",
+        }
+    }
+
+    /// Apply this style to a RenderConfig.
+    pub fn apply(self, config: &mut RenderConfig) {
+        match self {
+            VisualStyle::Charset(cs) => {
+                config.mode = RenderMode::Normal;
+                config.charset = cs;
+            }
+            VisualStyle::Outline => {
+                config.mode = RenderMode::Outline;
+            }
+        }
+    }
+
+    /// Determine current style from config.
+    pub fn from_config(config: &RenderConfig) -> Self {
+        if config.mode == RenderMode::Outline {
+            VisualStyle::Outline
+        } else {
+            VisualStyle::Charset(config.charset)
+        }
+    }
+
+    /// Index of this style in ALL.
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|&s| s == self).unwrap_or(0)
+    }
+}
+
+const FLASH_DISPLAY_SECS: u64 = 2;
+
+/// Action returned from export panel that needs to be executed in main loop.
+#[derive(Debug)]
+pub(crate) enum ExportAction {
+    Yank,
+    Save,
+}
 
 /// Application state.
 pub struct App {
@@ -26,8 +143,14 @@ pub struct App {
     frame_count: u64,
     /// Plain-text representation of the last rendered ASCII frame.
     pub last_frame_text: String,
-    /// When the user yanked — used to show "Copied!" for 1 s.
-    pub copied_at: Option<Instant>,
+    /// Last rendered grid (for ANSI export).
+    pub last_frame_grid: Option<Vec<Vec<AsciiCell>>>,
+    /// Flash message for status bar (e.g. "Saved: filename.txt").
+    pub flash_message: Option<(String, Instant)>,
+    /// Currently open overlay panel.
+    pub panel: Option<Panel>,
+    /// Cursor position within the open panel.
+    pub panel_cursor: usize,
 }
 
 impl App {
@@ -38,52 +161,148 @@ impl App {
             fps: 0.0,
             frame_count: 0,
             last_frame_text: String::new(),
-            copied_at: None,
+            last_frame_grid: None,
+            flash_message: None,
+            panel: None,
+            panel_cursor: 0,
         }
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) {
+    /// Handle key when a panel is open. Returns (consumed, optional export action).
+    fn handle_panel_key(&mut self, key: KeyEvent) -> (bool, Option<ExportAction>) {
+        let Some(panel) = self.panel else { return (false, None) };
+
+        match panel {
+            Panel::StylePicker => {
+                let count = VisualStyle::ALL.len();
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.panel_cursor = self.panel_cursor.saturating_sub(1);
+                        VisualStyle::ALL[self.panel_cursor].apply(&mut self.config);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if self.panel_cursor + 1 < count {
+                            self.panel_cursor += 1;
+                        }
+                        VisualStyle::ALL[self.panel_cursor].apply(&mut self.config);
+                    }
+                    KeyCode::Enter | KeyCode::Esc | KeyCode::Char('v') => {
+                        self.panel = None;
+                    }
+                    _ => {}
+                }
+            }
+            Panel::Settings => {
+                let count = SettingsItem::ALL.len();
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.panel_cursor = self.panel_cursor.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if self.panel_cursor + 1 < count {
+                            self.panel_cursor += 1;
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Enter => {
+                        let item = SettingsItem::ALL[self.panel_cursor];
+                        let is_right = matches!(key.code, KeyCode::Right | KeyCode::Char('l'));
+                        match item {
+                            SettingsItem::Color => {
+                                self.config.color = !self.config.color;
+                            }
+                            SettingsItem::Background => {
+                                self.config.bg_removal = !self.config.bg_removal;
+                            }
+                            SettingsItem::Mirror => {
+                                self.config.mirror = !self.config.mirror;
+                            }
+                            SettingsItem::Brightness => {
+                                if is_right {
+                                    self.config.brightness_threshold =
+                                        self.config.brightness_threshold.saturating_add(5);
+                                } else {
+                                    self.config.brightness_threshold =
+                                        self.config.brightness_threshold.saturating_sub(5);
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('f') => {
+                        self.panel = None;
+                    }
+                    _ => {}
+                }
+            }
+            Panel::Export => {
+                let count = ExportItem::ALL.len();
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.panel_cursor = self.panel_cursor.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if self.panel_cursor + 1 < count {
+                            self.panel_cursor += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let item = ExportItem::ALL[self.panel_cursor];
+                        self.panel = None;
+                        let action = match item {
+                            ExportItem::YankClipboard => ExportAction::Yank,
+                            ExportItem::SaveFile => ExportAction::Save,
+                        };
+                        return (true, Some(action));
+                    }
+                    KeyCode::Esc | KeyCode::Char('e') => {
+                        self.panel = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (true, None)
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> Option<ExportAction> {
+        // If a panel is open, route input there first.
+        let (consumed, action) = self.handle_panel_key(key);
+        if consumed {
+            return action;
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.running = false,
-            KeyCode::Char('o') => {
-                self.config.mode = match self.config.mode {
-                    RenderMode::Normal => RenderMode::Outline,
-                    RenderMode::Outline => RenderMode::Normal,
-                };
-            }
-            KeyCode::Char('c') => {
-                self.config.color = !self.config.color;
-            }
             KeyCode::Char('v') => {
-                self.config.charset = self.config.charset.next();
+                self.panel = Some(Panel::StylePicker);
+                self.panel_cursor = VisualStyle::from_config(&self.config).index();
             }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.config.brightness_threshold =
-                    self.config.brightness_threshold.saturating_add(5);
+            KeyCode::Char('f') => {
+                self.panel = Some(Panel::Settings);
+                self.panel_cursor = 0;
             }
-            KeyCode::Char('-') => {
-                self.config.brightness_threshold =
-                    self.config.brightness_threshold.saturating_sub(5);
+            KeyCode::Char('e') => {
+                self.panel = Some(Panel::Export);
+                self.panel_cursor = 0;
             }
             _ => {}
         }
+        None
     }
 
-    /// Copy `last_frame_text` to the system clipboard.
-    /// Sets `copied_at` on success; silently ignores clipboard errors.
-    pub fn yank_frame(&mut self, clipboard: &mut arboard::Clipboard) {
-        if !self.last_frame_text.is_empty() {
-            if clipboard.set_text(self.last_frame_text.clone()).is_ok() {
-                self.copied_at = Some(Instant::now());
+    /// Set a flash message to show in the status bar.
+    fn flash(&mut self, msg: String) {
+        self.flash_message = Some((msg, Instant::now()));
+    }
+
+    /// Get the current flash message if still within display time.
+    fn active_flash(&self) -> Option<&str> {
+        self.flash_message.as_ref().and_then(|(msg, t)| {
+            if t.elapsed().as_secs() < FLASH_DISPLAY_SECS {
+                Some(msg.as_str())
+            } else {
+                None
             }
-        }
-    }
-
-    /// True if "Copied!" should still be shown in the status bar.
-    fn showing_copied(&self) -> bool {
-        self.copied_at
-            .map(|t| t.elapsed().as_secs() < COPIED_DISPLAY_SECS)
-            .unwrap_or(false)
+        })
     }
 }
 
@@ -97,6 +316,9 @@ pub fn run_viewer(mut camera: CameraCapture) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    // Load persisted user settings.
+    let user_config = crate::config::load();
+    user_config.apply_to(&mut app.config);
     // Clipboard — fall back gracefully if unavailable (headless env).
     let mut clipboard = arboard::Clipboard::new().ok();
 
@@ -116,7 +338,7 @@ pub fn run_viewer(mut camera: CameraCapture) -> Result<()> {
         let fg_mask_buf: Option<Vec<bool>> = if let Ok((rgb, w, h)) = &frame_data {
             bg_model.reset_if_size_changed(*w, *h);
             bg_model.update(rgb);
-            if app.config.mode == RenderMode::Outline {
+            if app.config.bg_removal {
                 Some(bg_model.foreground_mask(rgb))
             } else {
                 None
@@ -137,18 +359,23 @@ pub fn run_viewer(mut camera: CameraCapture) -> Result<()> {
             None
         };
 
-        // Keep last_frame_text up to date for yank.
+        // Keep last frame data up to date for export.
         if let Some(ref grid) = ascii_grid {
-            app.last_frame_text = grid_to_text(grid);
+            app.last_frame_text = crate::export::grid_to_text(grid);
+            app.last_frame_grid = Some(grid.clone());
         }
 
         // Draw TUI
-        let showing_copied = app.showing_copied();
+        let flash = app.active_flash().map(|s| s.to_string());
         let fps = app.fps;
-        let mode = app.config.mode;
         let color_on = app.config.color;
-        let charset_label = app.config.charset.label();
+        let bg_on = app.config.bg_removal;
+        let mirror_on = app.config.mirror;
+        let brightness = app.config.brightness_threshold;
         let ascii_ref = &ascii_grid;
+        let open_panel = app.panel;
+        let panel_cursor = app.panel_cursor;
+        let current_style = VisualStyle::from_config(&app.config);
 
         terminal.draw(|f| {
             let area = f.area();
@@ -180,20 +407,33 @@ pub fn run_viewer(mut camera: CameraCapture) -> Result<()> {
                 }
             }
 
+            // Overlay panel
+            match open_panel {
+                Some(Panel::StylePicker) => {
+                    render_style_picker(f, view_area, panel_cursor, current_style);
+                }
+                Some(Panel::Settings) => {
+                    render_settings_panel(f, view_area, panel_cursor, color_on, bg_on, mirror_on, brightness);
+                }
+                Some(Panel::Export) => {
+                    render_export_panel(f, view_area, panel_cursor);
+                }
+                None => {}
+            }
+
             // Status bar
-            let mode_label = match mode {
-                RenderMode::Normal => "NORMAL",
-                RenderMode::Outline => "OUTLINE",
-            };
+            let style_label = current_style.label();
             let color_label = if color_on { "COLOR" } else { "MONO" };
-            let copy_notice = if showing_copied { " Copied!" } else { "" };
+            let bg_label = if bg_on { " BG" } else { "" };
+            let flash_text = flash.as_deref().unwrap_or("");
+            let flash_display = if flash_text.is_empty() { String::new() } else { format!(" {}", flash_text) };
             let status = format!(
-                " {} | {} | {} | FPS: {:.0} | [o]utline [c]olor [v]charset [y]ank [q]uit{}",
-                mode_label,
+                " {} | {}{} | FPS: {:.0} | [v]style [f]settings [e]xport [q]uit{}",
+                style_label,
                 color_label,
-                charset_label,
+                bg_label,
                 fps,
-                copy_notice,
+                flash_display,
             );
             let status_line = Paragraph::new(status).style(
                 Style::default()
@@ -217,16 +457,35 @@ pub fn run_viewer(mut camera: CameraCapture) -> Result<()> {
         let remaining = target_frame_time.saturating_sub(frame_start.elapsed());
         if event::poll(remaining)? {
             if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('y') {
-                    if let Some(ref mut cb) = clipboard {
-                        app.yank_frame(cb);
+                let action = app.handle_key(key);
+                // Execute export actions that need resources from main loop.
+                if let Some(action) = action {
+                    match action {
+                        ExportAction::Yank => {
+                            if let Some(ref mut cb) = clipboard {
+                                if let Some(ref grid) = app.last_frame_grid {
+                                    if crate::export::yank_to_clipboard(cb, grid, app.config.color) {
+                                        app.flash("Copied!".into());
+                                    }
+                                }
+                            }
+                        }
+                        ExportAction::Save => {
+                            if let Some(ref grid) = app.last_frame_grid {
+                                match crate::export::save_to_file(grid, app.config.color) {
+                                    Ok(filename) => app.flash(format!("Saved: {}", filename)),
+                                    Err(e) => app.flash(format!("Error: {}", e)),
+                                }
+                            }
+                        }
                     }
-                } else {
-                    app.handle_key(key);
                 }
             }
         }
     }
+
+    // Save user settings before exit.
+    crate::config::save(&crate::config::UserConfig::from_render_config(&app.config));
 
     // Restore terminal
     disable_raw_mode()?;
@@ -234,18 +493,138 @@ pub fn run_viewer(mut camera: CameraCapture) -> Result<()> {
     Ok(())
 }
 
-/// Convert 2D AsciiCell grid to a plain-text string (rows separated by newlines).
-fn grid_to_text(grid: &[Vec<AsciiCell>]) -> String {
-    let mut out = String::new();
-    for (i, row) in grid.iter().enumerate() {
-        for cell in row {
-            out.push(cell.ch);
-        }
-        if i + 1 < grid.len() {
-            out.push('\n');
-        }
-    }
-    out
+/// Render the style picker overlay on top of the video area.
+fn render_style_picker(f: &mut ratatui::Frame, view_area: Rect, cursor: usize, current: VisualStyle) {
+    let panel_w: u16 = 20;
+    let panel_h = VisualStyle::ALL.len() as u16 + 2; // items + border
+    // Position: top-left corner of view area.
+    let x = view_area.x + 1;
+    let y = view_area.y + 1;
+    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+
+    // Clear the area behind the panel.
+    f.render_widget(Clear, panel_rect);
+
+    let items: Vec<Line<'static>> = VisualStyle::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, &vs)| {
+            let marker = if vs == current { "● " } else { "  " };
+            let label = format!("{}{}", marker, vs.label());
+            let style = if i == cursor {
+                Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::styled(label, style)
+        })
+        .collect();
+
+    let picker = Paragraph::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" style ")
+            .style(Style::default().bg(Color::DarkGray)),
+    );
+    f.render_widget(picker, panel_rect);
+}
+
+/// Render the settings panel overlay.
+fn render_settings_panel(
+    f: &mut ratatui::Frame,
+    view_area: Rect,
+    cursor: usize,
+    color_on: bool,
+    bg_on: bool,
+    mirror_on: bool,
+    brightness: u8,
+) {
+    // Build row strings first, then derive panel width from content.
+    let rows: Vec<String> = SettingsItem::ALL
+        .iter()
+        .map(|&item| {
+            let value: String = match item {
+                SettingsItem::Color => if color_on { "ON".into() } else { "OFF".into() },
+                SettingsItem::Background => if bg_on { "ON".into() } else { "OFF".into() },
+                SettingsItem::Mirror => if mirror_on { "ON".into() } else { "OFF".into() },
+                SettingsItem::Brightness => format!("◀ {} ▶", brightness),
+            };
+            format!(" {}  {} ", item.label(), value)
+        })
+        .collect();
+
+    let max_row_len = rows.iter().map(|r| r.len()).max().unwrap_or(10);
+    // +2 for border left/right, min 14 to fit " settings " title
+    let panel_w = (max_row_len as u16 + 2).max(14);
+    let panel_h = SettingsItem::ALL.len() as u16 + 2;
+    let x = view_area.x + 1;
+    let y = view_area.y + 1;
+    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+
+    f.render_widget(Clear, panel_rect);
+
+    let inner_w = panel_w.saturating_sub(2) as usize; // content width inside border
+    let items: Vec<Line<'static>> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            // Pad to fill inner width
+            let padded = format!("{:<width$}", row, width = inner_w);
+            let style = if i == cursor {
+                Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::styled(padded, style)
+        })
+        .collect();
+
+    let panel = Paragraph::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" settings ")
+            .style(Style::default().bg(Color::DarkGray)),
+    );
+    f.render_widget(panel, panel_rect);
+}
+
+/// Render the export panel overlay.
+fn render_export_panel(f: &mut ratatui::Frame, view_area: Rect, cursor: usize) {
+    let rows: Vec<&str> = ExportItem::ALL.iter().map(|item| item.label()).collect();
+    let max_row_len = rows.iter().map(|r| r.len()).max().unwrap_or(10);
+    let panel_w = (max_row_len as u16 + 6).max(12); // padding + border
+    let panel_h = ExportItem::ALL.len() as u16 + 2;
+    let x = view_area.x + 1;
+    let y = view_area.y + 1;
+    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+
+    f.render_widget(Clear, panel_rect);
+
+    let inner_w = panel_w.saturating_sub(2) as usize;
+    let items: Vec<Line<'static>> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let padded = format!(" {:<width$}", label, width = inner_w - 1);
+            let style = if i == cursor {
+                Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            Line::styled(padded, style)
+        })
+        .collect();
+
+    let panel = Paragraph::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" export ")
+            .style(Style::default().bg(Color::DarkGray)),
+    );
+    f.render_widget(panel, panel_rect);
 }
 
 /// Convert 2D AsciiCell grid to ratatui Lines with optional color.

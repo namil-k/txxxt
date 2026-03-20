@@ -1,6 +1,8 @@
 mod background;
 mod camera;
 mod charsets;
+mod config;
+mod export;
 mod net;
 mod render;
 mod tui;

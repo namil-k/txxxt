@@ -22,6 +22,9 @@ pub const ASCII_DOTS: &[char] = &[' ', '.', '·', ':', '∘', '○', '●', '◉
 /// Digits only.
 pub const ASCII_DIGITS: &[char] = &[' ', '1', '7', ':', ';', '3', '5', '4', '2', '6', '9', '8', '0', '#'];
 
+/// Block elements — pixel-art style, great with color mode.
+pub const ASCII_BLOCKS: &[char] = &[' ', '░', '▒', '▓', '█'];
+
 /// Edge direction characters for outline mode.
 pub const EDGE_CHARS: &[char] = &['─', '╱', '│', '╲'];
 
@@ -32,6 +35,7 @@ pub enum CharsetName {
     Letters,
     Dots,
     Digits,
+    Blocks,
 }
 
 impl CharsetName {
@@ -41,15 +45,7 @@ impl CharsetName {
             CharsetName::Letters => ASCII_LETTERS,
             CharsetName::Dots => ASCII_DOTS,
             CharsetName::Digits => ASCII_DIGITS,
-        }
-    }
-
-    pub fn next(self) -> Self {
-        match self {
-            CharsetName::Standard => CharsetName::Letters,
-            CharsetName::Letters => CharsetName::Dots,
-            CharsetName::Dots => CharsetName::Digits,
-            CharsetName::Digits => CharsetName::Standard,
+            CharsetName::Blocks => ASCII_BLOCKS,
         }
     }
 
@@ -59,6 +55,8 @@ impl CharsetName {
             CharsetName::Letters => "letters",
             CharsetName::Dots => "dots",
             CharsetName::Digits => "digits",
+            CharsetName::Blocks => "blocks",
         }
     }
+
 }

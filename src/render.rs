@@ -13,6 +13,10 @@ pub struct RenderConfig {
     pub charset: CharsetName,
     pub color: bool,
     pub brightness_threshold: u8,
+    /// Whether background removal is active (independent of mode).
+    pub bg_removal: bool,
+    /// Horizontal mirror (default true — selfie/mirror view).
+    pub mirror: bool,
 }
 
 impl Default for RenderConfig {
@@ -22,6 +26,8 @@ impl Default for RenderConfig {
             charset: CharsetName::Standard,
             color: false,
             brightness_threshold: 10,
+            bg_removal: false,
+            mirror: true,
         }
     }
 }
@@ -72,10 +78,12 @@ pub fn render_frame(
     for row in 0..rows {
         let mut line = Vec::with_capacity(cols as usize);
         for col in 0..cols {
+            // Mirror: flip column index when sampling from image.
+            let src_col = if config.mirror { cols - 1 - col } else { col };
             // Compute cell pixel bounds.
-            let x0 = ((col as f32) * cell_w) as u32;
+            let x0 = ((src_col as f32) * cell_w) as u32;
             let y0 = ((row as f32) * cell_h) as u32;
-            let x1 = (((col + 1) as f32) * cell_w) as u32;
+            let x1 = (((src_col + 1) as f32) * cell_w) as u32;
             let y1 = (((row + 1) as f32) * cell_h) as u32;
             let x1 = x1.min(img_width);
             let y1 = y1.min(img_height);
@@ -98,7 +106,7 @@ pub fn render_frame(
                 None => true,
             };
 
-            let ch = if brightness < config.brightness_threshold || (config.mode == RenderMode::Outline && !is_foreground) {
+            let ch = if brightness < config.brightness_threshold || !is_foreground {
                 ' '
             } else {
                 match config.mode {
