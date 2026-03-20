@@ -39,6 +39,8 @@ enum Commands {
         #[arg(short, long, default_value_t = 7878)]
         port: u16,
     },
+    /// Update txxxt to the latest version
+    Update,
 }
 
 fn main() -> Result<()> {
@@ -76,6 +78,31 @@ fn main() -> Result<()> {
             // Listen from CLI, then enter TUI on connection.
             net::peer::run_listener(port, camera)?;
         }
+        Some(Commands::Update) => {
+            self_update()?;
+        }
+    }
+
+    Ok(())
+}
+
+fn self_update() -> Result<()> {
+    use std::process::Command;
+
+    println!("current version: {}", env!("CARGO_PKG_VERSION"));
+    println!("checking for updates...");
+
+    let install_script = "https://raw.githubusercontent.com/kimnam1/txxxt/main/install.sh";
+
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(format!("curl -fsSL {} | bash", install_script))
+        .status()?;
+
+    if status.success() {
+        println!("update complete!");
+    } else {
+        eprintln!("update failed");
     }
 
     Ok(())
