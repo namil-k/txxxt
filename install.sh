@@ -43,6 +43,9 @@ trap 'rm -rf "${TMP_DIR}"' EXIT
 curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_DIR}/${ASSET}"
 tar xzf "${TMP_DIR}/${ASSET}" -C "${TMP_DIR}"
 
+# The extracted file is named after the asset (e.g. txxxt-macos-arm64)
+EXTRACTED="${ASSET%.tar.gz}"
+
 # Ensure install directory exists
 if [ ! -d "${INSTALL_DIR}" ]; then
   echo "  Creating ${INSTALL_DIR}"
@@ -51,10 +54,10 @@ fi
 
 # Install
 if [ -w "${INSTALL_DIR}" ]; then
-  mv "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+  mv "${TMP_DIR}/${EXTRACTED}" "${INSTALL_DIR}/${BINARY}"
 else
   echo "  Need sudo to install to ${INSTALL_DIR}"
-  sudo mv "${TMP_DIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+  sudo mv "${TMP_DIR}/${EXTRACTED}" "${INSTALL_DIR}/${BINARY}"
 fi
 
 chmod +x "${INSTALL_DIR}/${BINARY}"
