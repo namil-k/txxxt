@@ -101,18 +101,45 @@ fn handle_client(mut stream: TcpStream, rooms: Rooms) -> std::io::Result<()> {
 
         // Wait for the peer to join (poll until removed from map).
         // The JOIN handler will remove the room and start relaying.
-        // So we just wait here — if we're still in the map, keep waiting.
         // Once removed, this thread's stream clone becomes the creator side.
+        //
+        // Also detect if the creator disconnected while waiting:
+        // peek() returns Ok(0) on clean disconnect, Err on broken pipe.
+        stream.set_nonblocking(true).ok();
         loop {
             std::thread::sleep(Duration::from_millis(200));
+
+            // Check if creator disconnected.
+            let mut peek_buf = [0u8; 1];
+            match std::io::Read::read(&mut stream, &mut peek_buf) {
+                Ok(0) => {
+                    // Creator closed connection — clean up the room.
+                    let mut map = rooms.lock().unwrap();
+                    map.remove(&code);
+                    println!("room {} creator disconnected, removed", code);
+                    return Ok(());
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // No data yet — still connected, keep waiting.
+                }
+                Err(_) => {
+                    // Connection error — clean up.
+                    let mut map = rooms.lock().unwrap();
+                    map.remove(&code);
+                    println!("room {} creator error, removed", code);
+                    return Ok(());
+                }
+                Ok(_) => {
+                    // Unexpected data — ignore, keep waiting.
+                }
+            }
+
             let map = rooms.lock().unwrap();
             if !map.contains_key(&code) {
                 // Peer joined — the JOIN thread is handling relay.
-                // This thread can exit; the stream clone lives in the relay.
                 println!("room {} matched, creator thread done", code);
                 return Ok(());
             }
-            // Check if creator disconnected while waiting.
             drop(map);
         }
     } else if let Some(code) = cmd.strip_prefix("JOIN ") {

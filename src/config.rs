@@ -75,7 +75,7 @@ impl UserConfig {
         // Resolve style name to VisualStyle.
         let style = VisualStyle::ALL
             .iter()
-            .find(|s| s.label() == self.style)
+            .find(|s: &&VisualStyle| s.label() == self.style)
             .copied()
             .unwrap_or(VisualStyle::Charset(CharsetName::Standard));
         style.apply(config);

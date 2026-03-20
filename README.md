@@ -52,10 +52,6 @@ txxxt ABC123
 
 Or press `c` in the app and type the code.
 
-**Direct connection** (same network):
-
-Press `l` to listen, `c` to connect with IP:port.
-
 ## Keybindings
 
 ### General
@@ -73,8 +69,7 @@ Press `l` to listen, `c` to connect with IP:port.
 | Key | Action |
 |-----|--------|
 | `r` | Create relay room |
-| `c` | Connect (code or IP:port) |
-| `l` | Listen for direct connection |
+| `c` | Connect (room code) |
 | `m` | Mute / unmute mic |
 | `h` | Hide / show camera |
 | `p` | Move PIP (cycles corners) |
@@ -86,8 +81,6 @@ Press `l` to listen, `c` to connect with IP:port.
 txxxt                  # open webcam viewer
 txxxt ABC123           # join room directly
 txxxt update           # update to latest version
-txxxt call IP:PORT     # direct call
-txxxt listen           # listen for direct call
 ```
 
 ## Build from Source

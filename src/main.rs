@@ -28,17 +28,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start a 1:1 video call (caller)
-    Call {
-        /// Address to connect to (e.g., 192.168.1.100:7878)
-        addr: String,
-    },
-    /// Listen for incoming video calls
-    Listen {
-        /// Port to listen on
-        #[arg(short, long, default_value_t = 7878)]
-        port: u16,
-    },
     /// Update txxxt to the latest version
     Update,
 }
@@ -75,14 +64,6 @@ fn main() -> Result<()> {
             // Default: local ASCII webcam viewer (can start calls from TUI).
             tui::run_viewer(camera)?;
         }
-        Some(Commands::Call { addr }) => {
-            // Connect directly from CLI, then enter TUI.
-            net::peer::run_caller(&addr, camera)?;
-        }
-        Some(Commands::Listen { port }) => {
-            // Listen from CLI, then enter TUI on connection.
-            net::peer::run_listener(port, camera)?;
-        }
         Some(Commands::Update) => {
             self_update()?;
         }
@@ -94,6 +75,11 @@ fn main() -> Result<()> {
 /// Check if current version is latest. If not, auto-update and re-exec.
 fn check_version() {
     use std::process::Command;
+
+    // Prevent infinite re-exec loop: if we already checked, skip.
+    if std::env::var("TXXXT_UPDATED").is_ok() {
+        return;
+    }
 
     let current = env!("CARGO_PKG_VERSION");
 
@@ -107,9 +93,11 @@ fn check_version() {
         Ok(o) if o.status.success() => {
             let body = String::from_utf8_lossy(&o.stdout);
             // Parse "tag_name": "v0.4.0" from JSON.
+            // After splitting on "tag_name", remainder is: `: "v0.4.0", ...`
+            // split('"') → [`: `, `v0.4.0`, `, ...`] → nth(1) = version
             body.split("\"tag_name\"")
                 .nth(1)
-                .and_then(|s| s.split('"').nth(2))
+                .and_then(|s| s.split('"').nth(1))
                 .map(|v| v.trim_start_matches('v').to_string())
         }
         _ => None,
@@ -132,10 +120,11 @@ fn check_version() {
     match status {
         Ok(s) if s.success() => {
             eprintln!("updated! restarting...");
-            // Re-exec with same arguments.
+            // Re-exec with same arguments, with guard env to prevent loop.
             let args: Vec<String> = std::env::args().collect();
             let err = Command::new(&args[0])
                 .args(&args[1..])
+                .env("TXXXT_UPDATED", "1")
                 .status();
             std::process::exit(err.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
         }

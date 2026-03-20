@@ -35,10 +35,6 @@ enum AppMode {
     Call {
         peer_addr: SocketAddr,
     },
-    /// Waiting for incoming connection on a port.
-    Listening {
-        port: u16,
-    },
     /// Waiting for peer to join relay room.
     RelayWaiting,
     /// Joining a relay room.
@@ -217,7 +213,7 @@ pub struct App {
     pref_tab_base: String,
     /// Current app mode (local viewer or call).
     mode: AppMode,
-    /// Text input buffer for Connect panel (IP:port).
+    /// Text input buffer for Connect panel (room code).
     connect_input: String,
     /// Remote frame received from peer (during call).
     remote_grid: Option<Vec<Vec<AsciiCell>>>,
@@ -225,10 +221,6 @@ pub struct App {
     remote_rx: Option<mpsc::Receiver<Vec<Vec<AsciiCell>>>>,
     /// TCP writer for sending frames to peer.
     net_writer: Option<std::net::TcpStream>,
-    /// Handle to listener thread (for cancellation).
-    listener_handle: Option<std::thread::JoinHandle<Option<(std::net::TcpStream, SocketAddr)>>>,
-    /// Channel for listener result.
-    listener_rx: Option<mpsc::Receiver<(std::net::TcpStream, SocketAddr)>>,
     /// PIP corner position during call.
     pip_corner: PipCorner,
     /// PIP size index into PIP_SCALES.
@@ -311,8 +303,6 @@ impl App {
             remote_grid: None,
             remote_rx: None,
             net_writer: None,
-            listener_handle: None,
-            listener_rx: None,
             pip_corner: PipCorner::TopRight,
             pip_scale_idx: PIP_DEFAULT_SCALE_IDX,
             audio_capture: None,
@@ -336,71 +326,6 @@ impl App {
             remote_status: None,
             remote_status_rx: None,
             call_start: None,
-        }
-    }
-
-    /// Start a call by connecting to the given address.
-    fn start_call(&mut self, addr: &str) {
-        match std::net::TcpStream::connect(addr) {
-            Ok(stream) => {
-                let peer_addr = stream.peer_addr().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
-                self.setup_call(stream, peer_addr);
-                self.flash(format!("connected to {}", peer_addr));
-            }
-            Err(e) => {
-                self.flash(format!("connection failed: {}", e));
-            }
-        }
-    }
-
-    /// Start listening for incoming connections.
-    fn start_listen(&mut self, port: u16) {
-        let (tx, rx) = mpsc::channel();
-
-        let handle = std::thread::spawn(move || {
-            let listener = match std::net::TcpListener::bind(("0.0.0.0", port)) {
-                Ok(l) => l,
-                Err(_) => return None,
-            };
-            listener.set_nonblocking(false).ok();
-            match listener.accept() {
-                Ok((stream, addr)) => {
-                    let _ = tx.send((stream, addr));
-                    Some((std::net::TcpStream::connect("0.0.0.0:0").ok()?, addr))
-                }
-                Err(_) => None,
-            }
-        });
-
-        self.mode = AppMode::Listening { port };
-        self.listener_rx = Some(rx);
-        self.listener_handle = Some(handle);
-
-        // Build address string and copy to clipboard.
-        let ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".into());
-        let addr = format!("{}:{}", ip, port);
-        let mut copied = false;
-        if let Ok(mut clip) = arboard::Clipboard::new() {
-            if clip.set_text(&addr).is_ok() {
-                copied = true;
-            }
-        }
-        if copied {
-            self.flash(format!("{} copied!", addr));
-        } else {
-            self.flash(format!("listening — share: {}", addr));
-        }
-    }
-
-    /// Check if a listener has accepted a connection.
-    fn check_listener(&mut self) {
-        if let Some(ref rx) = self.listener_rx {
-            if let Ok((stream, peer_addr)) = rx.try_recv() {
-                self.listener_rx = None;
-                self.listener_handle = None;
-                self.setup_call(stream, peer_addr);
-                self.flash(format!("connected: {}", peer_addr));
-            }
         }
     }
 
@@ -690,8 +615,6 @@ impl App {
         self.remote_rx = None;
         self.net_writer = None;
         self.remote_grid = None;
-        self.listener_rx = None;
-        self.listener_handle = None;
         // Drop audio streams and AEC.
         self.audio_capture = None;
         self.audio_capture_rx = None;
@@ -730,7 +653,7 @@ impl App {
                         }
                         VisualStyle::ALL[self.panel_cursor].apply(&mut self.config);
                     }
-                    KeyCode::Enter | KeyCode::Esc | KeyCode::Char('v') => {
+                    KeyCode::Enter | KeyCode::Esc | KeyCode::Char('v') | KeyCode::Char('q') => {
                         self.panel = None;
                     }
                     _ => return (false, None),
@@ -771,7 +694,7 @@ impl App {
                             }
                         }
                     }
-                    KeyCode::Esc | KeyCode::Char('f') => {
+                    KeyCode::Esc | KeyCode::Char('f') | KeyCode::Char('q') => {
                         self.panel = None;
                     }
                     _ => return (false, None),
@@ -875,7 +798,7 @@ impl App {
                                 self.panel_cursor += 1;
                             }
                         }
-                        KeyCode::Esc | KeyCode::Char(',') => {
+                        KeyCode::Esc | KeyCode::Char(',') | KeyCode::Char('q') => {
                             self.panel = None;
                         }
                         _ => return (false, None),
@@ -883,19 +806,17 @@ impl App {
                 }
             }
             Panel::Connect => {
-                // Text input for room code or IP:port address.
+                // Text input for room code.
                 match key.code {
                     KeyCode::Enter => {
-                        let input = self.connect_input.trim().to_string();
+                        let input = self.connect_input.trim().to_uppercase();
                         if !input.is_empty() {
                             self.panel = None;
-                            // If 4 chars and no dots/colons → relay code.
-                            if input.len() <= 6 && !input.contains('.') && !input.contains(':') {
-                                self.start_relay_join(&input);
-                            } else {
-                                self.start_call(&input);
-                            }
+                            self.start_relay_join(&input);
                         }
+                    }
+                    KeyCode::Char('q') if self.connect_input.is_empty() => {
+                        self.panel = None;
                     }
                     KeyCode::Esc | KeyCode::Char('c') if self.connect_input.is_empty() => {
                         self.panel = None;
@@ -925,9 +846,9 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
-                // In call/listening/relay mode: end call. In local mode: quit.
+                // In call/relay mode: end call. In local mode: quit.
                 match self.mode {
-                    AppMode::Call { .. } | AppMode::Listening { .. }
+                    AppMode::Call { .. }
                     | AppMode::RelayWaiting | AppMode::RelayJoining => {
                         self.end_call();
                     }
@@ -940,11 +861,6 @@ impl App {
                 if self.mode == AppMode::Local {
                     self.panel = Some(Panel::Connect);
                     self.connect_input.clear();
-                }
-            }
-            KeyCode::Char('l') => {
-                if self.mode == AppMode::Local {
-                    self.start_listen(7878);
                 }
             }
             KeyCode::Char('r') => {
@@ -1153,13 +1069,6 @@ fn pref_tab_complete(input: &str) -> Vec<String> {
 
 /// Detect the local LAN IP address by opening a UDP socket.
 /// This doesn't send any data — it just lets the OS pick the right interface.
-fn get_local_ip() -> Option<String> {
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:80").ok()?;
-    let addr = socket.local_addr().ok()?;
-    Some(addr.ip().to_string())
-}
-
 /// Run the viewer TUI and immediately join a relay room.
 pub fn run_viewer_with_code(camera: CameraCapture, code: &str) -> Result<()> {
     enable_raw_mode()?;
@@ -1216,9 +1125,6 @@ fn run_main_loop(
 
     while app.running {
         let frame_start = Instant::now();
-
-        // Check if a listener accepted a connection.
-        app.check_listener();
 
         // Check relay status.
         app.check_relay();
@@ -1423,14 +1329,13 @@ fn run_main_loop(
             let status_area = chunks[2];
 
             match &app_mode {
-                AppMode::Local | AppMode::Listening { .. }
+                AppMode::Local
                 | AppMode::RelayWaiting | AppMode::RelayJoining => {
                     // Single video panel.
                     match ascii_ref {
                         Some(grid) => {
                             let lines = ascii_to_lines(grid);
                             let title = match &app_mode {
-                                AppMode::Listening { port } => format!(" txxxt — listening on :{} ", port),
                                 AppMode::RelayWaiting => {
                                     if let Some(ref code) = relay_code {
                                         format!(" txxxt — room: {} (waiting...) ", code)
@@ -1621,8 +1526,7 @@ fn run_main_loop(
             let color_label = if color_on { "COLOR" } else { "MONO" };
             let bg_label = if bg_on { " BG" } else { "" };
             let mode_info = match &app_mode {
-                AppMode::Local => "[c]onnect [r]oom [l]isten".to_string(),
-                AppMode::Listening { port } => format!("listening :{} | [q]cancel", port),
+                AppMode::Local => "[c]onnect [r]oom".to_string(),
                 AppMode::RelayWaiting => {
                     if let Some(ref code) = relay_code {
                         format!("room: {} — waiting for peer | [q]cancel", code)
@@ -1631,7 +1535,7 @@ fn run_main_loop(
                     }
                 }
                 AppMode::RelayJoining => "joining room... | [q]cancel".to_string(),
-                AppMode::Call { peer_addr } => {
+                AppMode::Call { peer_addr: _ } => {
                     let mic = if audio_muted { "🔇" } else { "🎙" };
                     let cam = if camera_hidden { "📷❌" } else { "📷" };
                     let remote_info = match remote_status {
@@ -1950,10 +1854,9 @@ fn render_preference_panel(
     f.render_widget(panel, panel_rect);
 }
 
-/// Render a flash message as a bordered overlay at the bottom of the video area.
-/// Render the connect panel (IP:port input).
+/// Render the connect panel (room code input).
 fn render_connect_panel(f: &mut ratatui::Frame, view_area: Rect, input: &str) {
-    let row = format!(" address: {}▏", input);
+    let row = format!(" room code: {}▏", input);
     let panel_w = (row.len() as u16 + 2).max(30).min(view_area.width.saturating_sub(4));
     let panel_h: u16 = 3;
     let x = view_area.x + 1;
@@ -2028,33 +1931,4 @@ use crate::net::protocol::{encode_frame, encode_audio, encode_status, decode_mes
 
 /// Relay server address.
 const RELAY_ADDR: &str = "ballast.proxy.rlwy.net:32623";
-
-/// CLI entry point: connect to peer, then run viewer in call mode.
-pub fn run_call(
-    camera: CameraCapture,
-    stream: std::net::TcpStream,
-    peer_addr: SocketAddr,
-) -> Result<()> {
-    // We reuse run_viewer but pre-configure the call state.
-    // Setup terminal first, then create app with call state.
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let mut app = App::new();
-    app.user_config = crate::config::load();
-    app.user_config.apply_to(&mut app.config);
-    app.setup_call(stream, peer_addr);
-
-    // Run the same unified loop via an internal helper.
-    let result = run_main_loop(&mut app, camera, &mut terminal);
-
-    crate::config::save(&crate::config::UserConfig::from_render_config(&app.config, &app.user_config));
-    disable_raw_mode()?;
-    io::stdout().execute(LeaveAlternateScreen)?;
-    result
-}
-
 
