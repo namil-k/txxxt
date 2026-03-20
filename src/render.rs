@@ -110,7 +110,7 @@ pub fn render_frame(
             };
 
             let color = if config.color && ch != ' ' {
-                Some((r, g, b))
+                Some(normalize_color_brightness(r, g, b))
             } else {
                 None
             };
@@ -185,6 +185,25 @@ fn gaussian_blur_3x3(gray: &[u8], w: u32, h: u32) -> Vec<u8> {
 fn brightness_to_char(brightness: u8, charset: &[char]) -> char {
     let idx = (brightness as usize * (charset.len() - 1)) / 255;
     charset[idx]
+}
+
+/// Normalize color brightness so that character density handles contrast
+/// while color conveys hue/saturation only.
+/// Compresses luminance into [80, 220] range, preserving hue.
+fn normalize_color_brightness(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+    let lum = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+    if lum < 1.0 {
+        return (80, 80, 80);
+    }
+    let min_l: f32 = 80.0;
+    let max_l: f32 = 220.0;
+    let target = min_l + (max_l - min_l) * (lum / 255.0);
+    let scale = target / lum;
+    (
+        (r as f32 * scale).clamp(0.0, 255.0) as u8,
+        (g as f32 * scale).clamp(0.0, 255.0) as u8,
+        (b as f32 * scale).clamp(0.0, 255.0) as u8,
+    )
 }
 
 /// Rec. 709 luminance.

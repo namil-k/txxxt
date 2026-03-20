@@ -9,7 +9,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Terminal;
 
 use crate::background::BackgroundModel;
@@ -168,13 +168,14 @@ pub fn run_viewer(mut camera: CameraCapture) -> Result<()> {
                     let paragraph = Paragraph::new(lines).block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                             .title(" txxxt "),
                     );
                     f.render_widget(paragraph, view_area);
                 }
                 None => {
                     let msg = Paragraph::new("Camera error — check permissions")
-                        .block(Block::default().borders(Borders::ALL).title(" txxxt "));
+                        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" txxxt "));
                     f.render_widget(msg, view_area);
                 }
             }
