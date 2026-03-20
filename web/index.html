@@ -16,7 +16,7 @@
     align-items: center;
   }
   .container {
-    max-width: 480px;
+    max-width: 600px;
     width: 100%;
     padding: 2rem;
   }
@@ -40,24 +40,32 @@
   }
   .steps h2 { font-size: 0.9rem; color: #888; margin-bottom: 1rem; }
   .step { margin-bottom: 1rem; }
+  .step:last-child { margin-bottom: 0; }
   .step-label { color: #666; font-size: 0.8rem; margin-bottom: 0.3rem; }
-  pre {
+  .cmd {
     background: #0a0a0a;
     border: 1px solid #333;
     border-radius: 4px;
     padding: 0.6rem 0.8rem;
-    overflow-x: auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
     cursor: pointer;
-    position: relative;
     transition: border-color 0.2s;
+    white-space: nowrap;
+    overflow-x: auto;
   }
-  pre:hover { border-color: #00ff88; }
-  pre code { color: #00ff88; font-size: 0.9rem; }
-  .copied {
-    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-    color: #00ff88; font-size: 0.75rem; opacity: 0; transition: opacity 0.3s;
+  .cmd:hover { border-color: #00ff88; }
+  .cmd code { color: #00ff88; font-size: 0.85rem; flex: 1; }
+  .copy-btn {
+    color: #555;
+    font-size: 1rem;
+    flex-shrink: 0;
+    transition: color 0.2s;
+    user-select: none;
   }
-  .copied.show { opacity: 1; }
+  .cmd:hover .copy-btn { color: #888; }
   .no-code { text-align: center; }
   .no-code h2 { font-size: 1.5rem; color: #fff; margin-bottom: 1rem; }
   .no-code p { color: #888; margin-bottom: 1rem; line-height: 1.6; }
@@ -69,7 +77,7 @@
 </head>
 <body>
 <div class="container" id="app">
-  <!-- Room code page (hidden by default) -->
+  <!-- Room code page -->
   <div id="room-page" style="display:none">
     <h1>txxxt</h1>
     <p class="subtitle">terminal video call</p>
@@ -81,17 +89,17 @@
       <h2>join this call</h2>
       <div class="step">
         <div class="step-label">if txxxt is installed:</div>
-        <pre id="join-cmd" onclick="copyJoin()">
+        <div class="cmd" id="join-cmd">
           <code id="join-cmd-text"></code>
-          <span class="copied" id="join-copied">copied!</span>
-        </pre>
+          <span class="copy-btn" id="join-icon">&#x2398;</span>
+        </div>
       </div>
       <div class="step">
         <div class="step-label">first time? install first:</div>
-        <pre id="install-cmd" onclick="copyInstall()">
+        <div class="cmd" id="install-cmd">
           <code id="install-cmd-text"></code>
-          <span class="copied" id="install-copied">copied!</span>
-        </pre>
+          <span class="copy-btn" id="install-icon">&#x2398;</span>
+        </div>
       </div>
     </div>
     <div class="links">
@@ -101,16 +109,16 @@
     </div>
   </div>
 
-  <!-- Landing page (hidden by default) -->
+  <!-- Landing page -->
   <div id="landing-page" style="display:none">
     <div class="no-code">
       <h2>txxxt</h2>
       <p>ascii webcam viewer &amp; video call<br>in your terminal</p>
-      <pre id="landing-install" onclick="copyInstall()">
+      <div class="cmd" id="landing-cmd">
         <code id="landing-cmd-text"></code>
-        <span class="copied" id="landing-copied">copied!</span>
-      </pre>
-      <p style="color:#666;font-size:0.8rem;">then run: txxxt</p>
+        <span class="copy-btn" id="landing-icon">&#x2398;</span>
+      </div>
+      <p style="color:#666;font-size:0.8rem;margin-top:1rem;">then run: txxxt</p>
       <div class="links">
         <a href="https://github.com/namil-k/txxxt">GitHub</a>
         <span>·</span>
@@ -125,33 +133,28 @@ var INSTALL_CMD = 'curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/ma
 var path = window.location.pathname.replace(/^\/+/, '').replace(/\/+$/, '');
 var code = (path && /^[A-Za-z0-9]{2,8}$/.test(path)) ? path.toUpperCase() : null;
 
-var INSTALL_DISPLAY = '$ curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/main/install.sh | bash';
-
 if (code) {
   document.getElementById('room-page').style.display = 'block';
   document.getElementById('room-code').textContent = code;
-  document.getElementById('join-cmd-text').textContent = '$ txxxt ' + code;
-  document.getElementById('install-cmd-text').textContent = INSTALL_DISPLAY;
+  document.getElementById('join-cmd-text').textContent = 'txxxt ' + code;
+  document.getElementById('install-cmd-text').textContent = INSTALL_CMD;
+  document.getElementById('join-cmd').onclick = function() { copyAndFlash('txxxt ' + code, 'join-icon'); };
+  document.getElementById('install-cmd').onclick = function() { copyAndFlash(INSTALL_CMD, 'install-icon'); };
 } else {
   document.getElementById('landing-page').style.display = 'block';
-  document.getElementById('landing-cmd-text').textContent = INSTALL_DISPLAY;
+  document.getElementById('landing-cmd-text').textContent = INSTALL_CMD;
+  document.getElementById('landing-cmd').onclick = function() { copyAndFlash(INSTALL_CMD, 'landing-icon'); };
 }
 
-function flashCopied(id) {
-  var el = document.getElementById(id);
-  el.classList.add('show');
-  setTimeout(function() { el.classList.remove('show'); }, 1500);
-}
-
-function copyJoin() {
-  navigator.clipboard.writeText('txxxt ' + code);
-  flashCopied('join-copied');
-}
-
-function copyInstall() {
-  navigator.clipboard.writeText(INSTALL_CMD);
-  flashCopied('install-copied');
-  flashCopied('landing-copied');
+function copyAndFlash(text, iconId) {
+  navigator.clipboard.writeText(text);
+  var el = document.getElementById(iconId);
+  el.textContent = '\u2713';
+  el.style.color = '#00ff88';
+  setTimeout(function() {
+    el.innerHTML = '&#x2398;';
+    el.style.color = '';
+  }, 1500);
 }
 </script>
 </body>
