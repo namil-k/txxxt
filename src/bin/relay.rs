@@ -14,8 +14,8 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Room code length.
-const CODE_LEN: usize = 4;
+/// Room code length (6 chars = ~900M combinations).
+const CODE_LEN: usize = 6;
 
 /// Session time limit (free tier).
 const SESSION_LIMIT: Duration = Duration::from_secs(5 * 60);

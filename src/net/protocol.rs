@@ -19,11 +19,25 @@ const CELL_BYTES: usize = 8;
 /// Message types for multiplexing video and audio.
 const MSG_VIDEO: u8 = 0x01;
 const MSG_AUDIO: u8 = 0x02;
+const MSG_STATUS: u8 = 0x03;
+
+/// Max video message size (4 MB).
+const MAX_VIDEO_LEN: usize = 4 * 1024 * 1024;
+/// Max audio message size (1 MB = ~5 seconds at 48kHz).
+const MAX_AUDIO_SAMPLES: usize = 512 * 1024;
 
 /// A decoded network message — either video or audio.
+/// Peer status flags.
+#[derive(Debug, Clone, Copy)]
+pub struct PeerStatus {
+    pub mic_muted: bool,
+    pub camera_hidden: bool,
+}
+
 pub enum Message {
     Video(AsciiFrame),
     Audio(Vec<i16>),
+    Status(PeerStatus),
 }
 
 /// Encode a video frame with message type prefix.
@@ -79,6 +93,17 @@ pub fn encode_audio(samples: &[i16]) -> Vec<u8> {
     out
 }
 
+/// Encode peer status flags.
+///
+/// Wire format: [MSG_STATUS: u8][flags: u8]
+///   bit 0 = mic_muted, bit 1 = camera_hidden
+pub fn encode_status(status: &PeerStatus) -> Vec<u8> {
+    let mut flags: u8 = 0;
+    if status.mic_muted { flags |= 0x01; }
+    if status.camera_hidden { flags |= 0x02; }
+    vec![MSG_STATUS, flags]
+}
+
 /// Attempt to decode one message from a byte buffer.
 ///
 /// Returns `Some((message, consumed_bytes))` if a complete message is present,
@@ -97,6 +122,11 @@ pub fn decode_message(buf: &[u8]) -> Option<(Message, usize)> {
             let width = u16::from_le_bytes([buf[1], buf[2]]);
             let height = u16::from_le_bytes([buf[3], buf[4]]);
             let data_len = u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]) as usize;
+
+            // Reject oversized messages.
+            if data_len > MAX_VIDEO_LEN {
+                return Some((Message::Video(AsciiFrame { width: 0, height: 0, cells: vec![] }), 9));
+            }
 
             let total = 9 + data_len;
             if buf.len() < total {
@@ -133,6 +163,12 @@ pub fn decode_message(buf: &[u8]) -> Option<(Message, usize)> {
                 return None;
             }
             let sample_count = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+
+            // Reject oversized messages.
+            if sample_count > MAX_AUDIO_SAMPLES {
+                return Some((Message::Audio(vec![]), 5));
+            }
+
             let data_len = sample_count * 2;
             let total = 5 + data_len;
             if buf.len() < total {
@@ -147,6 +183,16 @@ pub fn decode_message(buf: &[u8]) -> Option<(Message, usize)> {
             }
 
             Some((Message::Audio(samples), total))
+        }
+        MSG_STATUS => {
+            if buf.len() < 2 {
+                return None;
+            }
+            let flags = buf[1];
+            Some((Message::Status(PeerStatus {
+                mic_muted: flags & 0x01 != 0,
+                camera_hidden: flags & 0x02 != 0,
+            }), 2))
         }
         _ => {
             // Unknown message type — skip one byte to try to resync.

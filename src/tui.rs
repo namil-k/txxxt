@@ -267,6 +267,16 @@ pub struct App {
     relay_code: Option<String>,
     /// Relay JOIN stream receiver.
     relay_join_rx: Option<mpsc::Receiver<(std::net::TcpStream, SocketAddr)>>,
+    /// Relay JOIN error receiver.
+    relay_join_err_rx: Option<mpsc::Receiver<String>>,
+    /// Disconnect notification from reader thread.
+    disconnect_rx: Option<mpsc::Receiver<()>>,
+    /// Remote peer status (mic/camera).
+    remote_status: Option<PeerStatus>,
+    /// Channel for receiving remote status updates.
+    remote_status_rx: Option<mpsc::Receiver<PeerStatus>>,
+    /// Call start time (for 5-min countdown).
+    call_start: Option<Instant>,
 }
 
 /// A directory entry for the preference file picker.
@@ -321,6 +331,11 @@ impl App {
             relay_handle: None,
             relay_code: None,
             relay_join_rx: None,
+            relay_join_err_rx: None,
+            disconnect_rx: None,
+            remote_status: None,
+            remote_status_rx: None,
+            call_start: None,
         }
     }
 
@@ -397,18 +412,26 @@ impl App {
 
         let (remote_tx, remote_rx) = mpsc::channel::<Vec<Vec<AsciiCell>>>();
         let (audio_net_tx, audio_net_rx) = mpsc::channel::<Vec<i16>>();
+        let (status_tx, status_rx) = mpsc::channel::<PeerStatus>();
+        let (disconnect_tx, disconnect_rx) = mpsc::channel::<()>();
 
         // Spawn reader thread — handles both video and audio messages.
         std::thread::spawn(move || {
             use std::io::Read;
             let mut reader = reader_stream;
             let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+            // Cap buffer to 8MB to prevent unbounded growth.
+            const MAX_BUF: usize = 8 * 1024 * 1024;
             let mut tmp = [0u8; 8192];
             loop {
                 match reader.read(&mut tmp) {
                     Ok(0) => break,
                     Ok(n) => {
                         buf.extend_from_slice(&tmp[..n]);
+                        if buf.len() > MAX_BUF {
+                            buf.clear();
+                            break;
+                        }
                         let mut latest_grid = None;
                         loop {
                             match decode_message(&buf) {
@@ -419,6 +442,9 @@ impl App {
                                         }
                                         Message::Audio(samples) => {
                                             let _ = audio_net_tx.send(samples);
+                                        }
+                                        Message::Status(status) => {
+                                            let _ = status_tx.send(status);
                                         }
                                     }
                                     buf.drain(..consumed);
@@ -435,6 +461,8 @@ impl App {
                     Err(_) => break,
                 }
             }
+            // Notify main thread that connection is lost.
+            let _ = disconnect_tx.send(());
         });
 
         // Start audio capture and playback.
@@ -478,6 +506,10 @@ impl App {
         self.audio_playback = audio_playback;
         self.audio_playback_tx = audio_playback_tx;
         self.audio_playback_rate = playback_rate;
+        self.disconnect_rx = Some(disconnect_rx);
+        self.remote_status = None;
+        self.remote_status_rx = Some(status_rx);
+        self.call_start = Some(Instant::now());
         self.audio_net_rx = Some(audio_net_rx);
         self.audio_muted = false;
         self.echo_canceller = echo_canceller;
@@ -490,20 +522,22 @@ impl App {
 
         let handle = std::thread::spawn(move || -> Option<(std::net::TcpStream, SocketAddr)> {
             use std::io::{BufRead, BufReader, Write};
-            let mut stream = std::net::TcpStream::connect(RELAY_ADDR).ok()?;
-            stream.set_read_timeout(Some(Duration::from_secs(60))).ok();
-            write!(stream, "CREATE\n").ok()?;
-            stream.flush().ok()?;
+            let stream = std::net::TcpStream::connect_timeout(
+                &RELAY_ADDR.parse().ok()?,
+                Duration::from_secs(5),
+            ).ok()?;
+            stream.set_read_timeout(Some(Duration::from_secs(120)).into()).ok();
+            let mut wstream = stream.try_clone().ok()?;
+            write!(wstream, "CREATE\n").ok()?;
+            wstream.flush().ok()?;
 
             let mut reader = BufReader::new(stream.try_clone().ok()?);
 
-            // Read "ROOM XXXX"
+            // Read "ROOM XXXXXX"
             let mut line = String::new();
             reader.read_line(&mut line).ok()?;
             let code = line.trim().strip_prefix("ROOM ")?.to_string();
 
-            // Send code back to main thread via flash (hacky but works).
-            // We'll wait for "PAIRED" from server.
             let _ = tx.send(("CODE".to_string(), code.clone()));
 
             let mut line2 = String::new();
@@ -513,44 +547,70 @@ impl App {
                 let _ = tx.send(("PAIRED".to_string(), String::new()));
                 Some((stream, addr))
             } else {
+                let _ = tx.send(("ERROR".to_string(), "relay connection lost".to_string()));
                 None
             }
         });
 
-        // Wait briefly for the room code.
         self.mode = AppMode::RelayWaiting;
         self.relay_rx = Some(rx);
         self.relay_handle = Some(handle);
     }
 
-    /// Join a relay room with a 4-char code.
+    /// Join a relay room with a code.
     fn start_relay_join(&mut self, code: &str) {
         let code = code.trim().to_uppercase();
         self.flash(format!("joining room {}...", code));
 
         let code_clone = code.clone();
         let (tx, rx) = mpsc::channel();
+        let (err_tx, err_rx) = mpsc::channel::<String>();
 
-        std::thread::spawn(move || -> Option<()> {
+        std::thread::spawn(move || {
             use std::io::{BufRead, BufReader, Write};
-            let mut stream = std::net::TcpStream::connect(RELAY_ADDR).ok()?;
+            let addr = match RELAY_ADDR.parse() {
+                Ok(a) => a,
+                Err(_) => { let _ = err_tx.send("invalid relay address".into()); return; }
+            };
+            let stream = match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+                Ok(s) => s,
+                Err(_) => { let _ = err_tx.send("relay server unreachable".into()); return; }
+            };
             stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
-            write!(stream, "JOIN {}\n", code_clone).ok()?;
-            stream.flush().ok()?;
-
-            let mut reader = BufReader::new(stream.try_clone().ok()?);
-            let mut line = String::new();
-            reader.read_line(&mut line).ok()?;
-
-            if line.trim() == "OK" {
-                let addr = stream.peer_addr().ok()?;
-                let _ = tx.send((stream, addr));
+            let mut wstream = match stream.try_clone() {
+                Ok(s) => s,
+                Err(_) => { let _ = err_tx.send("stream error".into()); return; }
+            };
+            if write!(wstream, "JOIN {}\n", code_clone).is_err() || wstream.flush().is_err() {
+                let _ = err_tx.send("relay send error".into());
+                return;
             }
-            None
+
+            let mut reader = BufReader::new(match stream.try_clone() {
+                Ok(s) => s,
+                Err(_) => { let _ = err_tx.send("stream error".into()); return; }
+            });
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                let _ = err_tx.send("relay read timeout".into());
+                return;
+            }
+
+            let response = line.trim();
+            if response == "OK" {
+                if let Ok(addr) = stream.peer_addr() {
+                    let _ = tx.send((stream, addr));
+                }
+            } else if response.starts_with("ERR") {
+                let _ = err_tx.send(format!("room not found: {}", code_clone));
+            } else {
+                let _ = err_tx.send("unexpected relay response".into());
+            }
         });
 
         self.mode = AppMode::RelayJoining;
         self.relay_join_rx = Some(rx);
+        self.relay_join_err_rx = Some(err_rx);
     }
 
     /// Check relay create/join status.
@@ -583,6 +643,10 @@ impl App {
                             return;
                         }
                     }
+                } else if kind == "ERROR" {
+                    self.flash(format!("relay error: {}", data));
+                    self.end_call();
+                    return;
                 }
             }
         }
@@ -591,9 +655,32 @@ impl App {
         if let Some(ref rx) = self.relay_join_rx {
             if let Ok((stream, addr)) = rx.try_recv() {
                 self.relay_join_rx = None;
+                self.relay_join_err_rx = None;
                 self.setup_call(stream, addr);
                 self.flash("relay connected!".into());
+                return;
             }
+        }
+        // Check JOIN errors.
+        if let Some(ref rx) = self.relay_join_err_rx {
+            if let Ok(err) = rx.try_recv() {
+                self.flash(err);
+                self.end_call();
+                return;
+            }
+        }
+    }
+
+    /// Send current mic/camera status to peer.
+    fn send_status(&mut self) {
+        use std::io::Write;
+        let status = PeerStatus {
+            mic_muted: self.audio_muted,
+            camera_hidden: self.camera_hidden,
+        };
+        let encoded = encode_status(&status);
+        if let Some(ref mut writer) = self.net_writer {
+            let _ = writer.write_all(&encoded);
         }
     }
 
@@ -616,6 +703,11 @@ impl App {
         self.relay_handle = None;
         self.relay_code = None;
         self.relay_join_rx = None;
+        self.relay_join_err_rx = None;
+        self.disconnect_rx = None;
+        self.remote_status = None;
+        self.remote_status_rx = None;
+        self.call_start = None;
         self.flash("call ended".into());
     }
 
@@ -899,6 +991,7 @@ impl App {
                     self.audio_muted = !self.audio_muted;
                     let label = if self.audio_muted { "muted" } else { "unmuted" };
                     self.flash(label.into());
+                    self.send_status();
                 }
             }
             KeyCode::Char('h') => {
@@ -906,6 +999,7 @@ impl App {
                     self.camera_hidden = !self.camera_hidden;
                     let label = if self.camera_hidden { "camera off" } else { "camera on" };
                     self.flash(label.into());
+                    self.send_status();
                 }
             }
             _ => {}
@@ -1129,6 +1223,35 @@ fn run_main_loop(
         // Check relay status.
         app.check_relay();
 
+        // Check remote peer status updates.
+        if let Some(ref rx) = app.remote_status_rx {
+            while let Ok(status) = rx.try_recv() {
+                app.remote_status = Some(status);
+            }
+        }
+
+        // Check for disconnect.
+        if let Some(ref rx) = app.disconnect_rx {
+            if rx.try_recv().is_ok() {
+                app.flash("connection lost".into());
+                app.end_call();
+            }
+        }
+
+        // 5-minute countdown warning.
+        if let Some(start) = app.call_start {
+            let elapsed = start.elapsed().as_secs();
+            let limit: u64 = 5 * 60;
+            if elapsed >= limit {
+                app.flash("5 min limit reached".into());
+                app.end_call();
+            } else if limit - elapsed == 60 {
+                app.flash("1 minute remaining".into());
+            } else if limit - elapsed == 30 {
+                app.flash("30 seconds remaining".into());
+            }
+        }
+
         // Drain latest remote frame from channel (non-blocking).
         if let Some(ref rx) = app.remote_rx {
             while let Ok(grid) = rx.try_recv() {
@@ -1268,6 +1391,7 @@ fn run_main_loop(
         let connect_input = app.connect_input.clone();
         let app_mode = app.mode.clone();
         let relay_code = app.relay_code.clone();
+        let remote_status = app.remote_status;
         let pip_corner = app.pip_corner;
         let pip_scale = PIP_SCALES[app.pip_scale_idx] as u16;
         let audio_muted = app.audio_muted;
@@ -1342,24 +1466,46 @@ fn run_main_loop(
                     // FaceTime layout: remote = full screen, local = PIP top-right.
 
                     // Remote: full video area.
-                    match remote_ref {
-                        Some(grid) if !grid.is_empty() => {
-                            let inner_cols = video_area.width.saturating_sub(2) as usize;
-                            let inner_rows = video_area.height.saturating_sub(2) as usize;
-                            let scaled = crate::net::protocol::rescale_grid(grid, inner_cols, inner_rows);
-                            let lines = ascii_to_lines(&scaled);
-                            let p = Paragraph::new(lines).block(
-                                Block::default()
-                                    .borders(Borders::ALL)
-                                    .border_type(BorderType::Rounded)
-                                    .title(format!(" {} ", peer_addr)),
-                            );
-                            f.render_widget(p, video_area);
+                    let remote_cam_off = remote_status.map(|s| s.camera_hidden).unwrap_or(false);
+                    if remote_cam_off {
+                        // Peer's camera is off — show ❌ centered.
+                        let inner_h = video_area.height.saturating_sub(2) as usize;
+                        let mid_row = inner_h / 2;
+                        let mut lines: Vec<Line<'static>> = Vec::with_capacity(inner_h);
+                        for i in 0..inner_h {
+                            if i == mid_row {
+                                lines.push(Line::from("📷 off").alignment(ratatui::layout::Alignment::Center));
+                            } else {
+                                lines.push(Line::from(""));
+                            }
                         }
-                        _ => {
-                            let p = Paragraph::new("Waiting for peer...")
-                                .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" remote "));
-                            f.render_widget(p, video_area);
+                        let p = Paragraph::new(lines).block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
+                                .title(" remote — camera off "),
+                        );
+                        f.render_widget(p, video_area);
+                    } else {
+                        match remote_ref {
+                            Some(grid) if !grid.is_empty() => {
+                                let inner_cols = video_area.width.saturating_sub(2) as usize;
+                                let inner_rows = video_area.height.saturating_sub(2) as usize;
+                                let scaled = crate::net::protocol::rescale_grid(grid, inner_cols, inner_rows);
+                                let lines = ascii_to_lines(&scaled);
+                                let p = Paragraph::new(lines).block(
+                                    Block::default()
+                                        .borders(Borders::ALL)
+                                        .border_type(BorderType::Rounded)
+                                        .title(format!(" {} ", peer_addr)),
+                                );
+                                f.render_widget(p, video_area);
+                            }
+                            _ => {
+                                let p = Paragraph::new("Waiting for peer...")
+                                    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" remote "));
+                                f.render_widget(p, video_area);
+                            }
                         }
                     }
 
@@ -1488,9 +1634,17 @@ fn run_main_loop(
                 AppMode::Call { peer_addr } => {
                     let mic = if audio_muted { "🔇" } else { "🎙" };
                     let cam = if camera_hidden { "📷❌" } else { "📷" };
+                    let remote_info = match remote_status {
+                        Some(rs) => {
+                            let rm = if rs.mic_muted { "🔇" } else { "🎙" };
+                            let rc = if rs.camera_hidden { "📷❌" } else { "📷" };
+                            format!(" | peer:{}{}", rm, rc)
+                        }
+                        None => String::new(),
+                    };
                     format!(
-                        "{} | {}[m] {}[h] | [p]ip [+/-] | [q]uit",
-                        peer_addr, mic, cam,
+                        "{}[m] {}[h]{} | [p]ip [+/-] | [q]uit",
+                        mic, cam, remote_info,
                     )
                 }
             };
@@ -1870,7 +2024,7 @@ fn ascii_to_lines(grid: &[Vec<AsciiCell>]) -> Vec<Line<'static>> {
 }
 
 use std::net::SocketAddr;
-use crate::net::protocol::{encode_frame, encode_audio, decode_message, frame_to_grid, Message};
+use crate::net::protocol::{encode_frame, encode_audio, encode_status, decode_message, frame_to_grid, Message, PeerStatus};
 
 /// Relay server address.
 const RELAY_ADDR: &str = "ballast.proxy.rlwy.net:32623";
