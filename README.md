@@ -3,14 +3,14 @@
   <p align="center">
     ASCII webcam viewer & video call in your terminal
     <br />
-    <a href="https://txxxt.me">txxxt.me</a> · <a href="https://github.com/kimnam1/txxxt/releases">Releases</a>
+    <a href="https://txxxt.me">txxxt.me</a> · <a href="https://github.com/namil-k/txxxt/releases">Releases</a>
   </p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/kimnam1/txxxt/releases/latest"><img src="https://img.shields.io/github/v/release/kimnam1/txxxt?style=flat-square" alt="Latest Release"></a>
-  <a href="https://github.com/kimnam1/txxxt/blob/main/LICENSE"><img src="https://img.shields.io/github/license/kimnam1/txxxt?style=flat-square" alt="License"></a>
-  <a href="https://github.com/kimnam1/txxxt/stargazers"><img src="https://img.shields.io/github/stars/kimnam1/txxxt?style=flat-square" alt="Stars"></a>
+  <a href="https://github.com/namil-k/txxxt/releases/latest"><img src="https://img.shields.io/github/v/release/namil-k/txxxt?style=flat-square" alt="Latest Release"></a>
+  <a href="https://github.com/namil-k/txxxt/blob/main/LICENSE"><img src="https://img.shields.io/github/license/namil-k/txxxt?style=flat-square" alt="License"></a>
+  <a href="https://github.com/namil-k/txxxt/stargazers"><img src="https://img.shields.io/github/stars/namil-k/txxxt?style=flat-square" alt="Stars"></a>
 </p>
 
 ---
@@ -21,7 +21,7 @@ Turn your webcam into real-time ASCII art. Call your friends — no account, jus
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/kimnam1/txxxt/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/main/install.sh | bash
 
 # Run
 txxxt
@@ -93,7 +93,7 @@ txxxt listen           # listen for direct call
 ## Build from Source
 
 ```bash
-git clone https://github.com/kimnam1/txxxt.git
+git clone https://github.com/namil-k/txxxt.git
 cd txxxt
 cargo build --release
 ```

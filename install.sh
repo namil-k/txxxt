@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="kimnam1/txxxt"
+REPO="namil-k/txxxt"
 INSTALL_DIR="/usr/local/bin"
 BINARY="txxxt"
 

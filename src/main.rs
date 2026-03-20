@@ -100,7 +100,7 @@ fn check_version() {
     // Fetch latest tag from GitHub API (2 second timeout).
     let output = Command::new("curl")
         .args(["-fsSL", "--max-time", "2",
-               "https://api.github.com/repos/kimnam1/txxxt/releases/latest"])
+               "https://api.github.com/repos/namil-k/txxxt/releases/latest"])
         .output();
 
     let latest = match output {
@@ -126,7 +126,7 @@ fn check_version() {
 
     let status = Command::new("sh")
         .arg("-c")
-        .arg("curl -fsSL https://raw.githubusercontent.com/kimnam1/txxxt/main/install.sh | bash")
+        .arg("curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/main/install.sh | bash")
         .status();
 
     match status {
@@ -151,7 +151,7 @@ fn self_update() -> Result<()> {
     println!("current version: {}", env!("CARGO_PKG_VERSION"));
     println!("checking for updates...");
 
-    let install_script = "https://raw.githubusercontent.com/kimnam1/txxxt/main/install.sh";
+    let install_script = "https://raw.githubusercontent.com/namil-k/txxxt/main/install.sh";
 
     let status = Command::new("sh")
         .arg("-c")
