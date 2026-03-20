@@ -16,18 +16,28 @@ pub struct CellData {
 /// Bytes per cell in wire format: [ch: u32 LE, has_color, r, g, b] = 8 bytes.
 const CELL_BYTES: usize = 8;
 
-/// Encode a rendered ASCII grid into a length-prefixed byte packet.
+/// Message types for multiplexing video and audio.
+const MSG_VIDEO: u8 = 0x01;
+const MSG_AUDIO: u8 = 0x02;
+
+/// A decoded network message — either video or audio.
+pub enum Message {
+    Video(AsciiFrame),
+    Audio(Vec<i16>),
+}
+
+/// Encode a video frame with message type prefix.
 ///
-/// Wire format (v3 — unicode):
-///   [width: u16 LE][height: u16 LE][data_len: u32 LE][cells: N * 8 bytes]
-///   Each cell: [ch: u32 LE, has_color(0/1), r, g, b]
-pub fn encode_frame(grid: &[Vec<AsciiCell>]) -> Vec<u8> {
+/// Wire format:
+///   [MSG_VIDEO: u8][width: u16 LE][height: u16 LE][data_len: u32 LE][cells: N * 8 bytes]
+pub fn encode_video(grid: &[Vec<AsciiCell>]) -> Vec<u8> {
     let height = grid.len() as u16;
     let width = grid.first().map(|r| r.len()).unwrap_or(0) as u16;
     let cell_count = (width as u32) * (height as u32);
 
     let data_len = cell_count as usize * CELL_BYTES;
-    let mut out = Vec::with_capacity(8 + data_len);
+    let mut out = Vec::with_capacity(1 + 8 + data_len);
+    out.push(MSG_VIDEO);
     out.extend_from_slice(&width.to_le_bytes());
     out.extend_from_slice(&height.to_le_bytes());
     out.extend_from_slice(&(data_len as u32).to_le_bytes());
@@ -54,47 +64,95 @@ pub fn encode_frame(grid: &[Vec<AsciiCell>]) -> Vec<u8> {
     out
 }
 
-/// Attempt to parse one frame from a byte buffer.
+/// Encode audio samples (i16 PCM) with message type prefix.
 ///
-/// Returns `Some((frame, consumed_bytes))` if a complete frame is present,
+/// Wire format:
+///   [MSG_AUDIO: u8][sample_count: u32 LE][samples: N * 2 bytes i16 LE]
+pub fn encode_audio(samples: &[i16]) -> Vec<u8> {
+    let sample_count = samples.len() as u32;
+    let mut out = Vec::with_capacity(1 + 4 + samples.len() * 2);
+    out.push(MSG_AUDIO);
+    out.extend_from_slice(&sample_count.to_le_bytes());
+    for &s in samples {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+/// Attempt to decode one message from a byte buffer.
+///
+/// Returns `Some((message, consumed_bytes))` if a complete message is present,
 /// or `None` if more data is needed.
-pub fn decode_frame(buf: &[u8]) -> Option<(AsciiFrame, usize)> {
-    const HEADER_LEN: usize = 8; // 2 + 2 + 4
-    if buf.len() < HEADER_LEN {
-        return None;
-    }
-    let width = u16::from_le_bytes([buf[0], buf[1]]);
-    let height = u16::from_le_bytes([buf[2], buf[3]]);
-    let data_len = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
-
-    let total = HEADER_LEN + data_len;
-    if buf.len() < total {
+pub fn decode_message(buf: &[u8]) -> Option<(Message, usize)> {
+    if buf.is_empty() {
         return None;
     }
 
-    let data = &buf[HEADER_LEN..total];
-    let cell_count = data_len / CELL_BYTES;
-    let mut cells = Vec::with_capacity(cell_count);
+    match buf[0] {
+        MSG_VIDEO => {
+            // Need at least 1 (type) + 8 (header) = 9 bytes.
+            if buf.len() < 9 {
+                return None;
+            }
+            let width = u16::from_le_bytes([buf[1], buf[2]]);
+            let height = u16::from_le_bytes([buf[3], buf[4]]);
+            let data_len = u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]) as usize;
 
-    for i in 0..cell_count {
-        let offset = i * CELL_BYTES;
-        let ch_u32 = u32::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ]);
-        let ch = char::from_u32(ch_u32).unwrap_or(' ');
-        let has_color = data[offset + 4];
-        let color = if has_color != 0 {
-            Some((data[offset + 5], data[offset + 6], data[offset + 7]))
-        } else {
-            None
-        };
-        cells.push(CellData { ch, color });
+            let total = 9 + data_len;
+            if buf.len() < total {
+                return None;
+            }
+
+            let data = &buf[9..total];
+            let cell_count = data_len / CELL_BYTES;
+            let mut cells = Vec::with_capacity(cell_count);
+
+            for i in 0..cell_count {
+                let offset = i * CELL_BYTES;
+                let ch_u32 = u32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]);
+                let ch = char::from_u32(ch_u32).unwrap_or(' ');
+                let has_color = data[offset + 4];
+                let color = if has_color != 0 {
+                    Some((data[offset + 5], data[offset + 6], data[offset + 7]))
+                } else {
+                    None
+                };
+                cells.push(CellData { ch, color });
+            }
+
+            Some((Message::Video(AsciiFrame { width, height, cells }), total))
+        }
+        MSG_AUDIO => {
+            // Need at least 1 (type) + 4 (sample_count) = 5 bytes.
+            if buf.len() < 5 {
+                return None;
+            }
+            let sample_count = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            let data_len = sample_count * 2;
+            let total = 5 + data_len;
+            if buf.len() < total {
+                return None;
+            }
+
+            let data = &buf[5..total];
+            let mut samples = Vec::with_capacity(sample_count);
+            for i in 0..sample_count {
+                let offset = i * 2;
+                samples.push(i16::from_le_bytes([data[offset], data[offset + 1]]));
+            }
+
+            Some((Message::Audio(samples), total))
+        }
+        _ => {
+            // Unknown message type — skip one byte to try to resync.
+            Some((Message::Video(AsciiFrame { width: 0, height: 0, cells: vec![] }), 1))
+        }
     }
-
-    Some((AsciiFrame { width, height, cells }, total))
 }
 
 /// Convert an AsciiFrame back to a 2D grid of AsciiCells.
@@ -122,7 +180,6 @@ pub fn frame_to_grid(frame: &AsciiFrame) -> Vec<Vec<AsciiCell>> {
 }
 
 /// Rescale a grid to fit target dimensions using nearest-neighbor sampling.
-/// Stretches or shrinks both axes independently to fill (target_cols × target_rows).
 pub fn rescale_grid(
     grid: &[Vec<AsciiCell>],
     target_cols: usize,
@@ -152,6 +209,11 @@ pub fn rescale_grid(
     result
 }
 
+// Keep old names as aliases for backward compat within codebase.
+pub fn encode_frame(grid: &[Vec<AsciiCell>]) -> Vec<u8> {
+    encode_video(grid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,72 +240,138 @@ mod tests {
     }
 
     #[test]
-    fn encode_decode_roundtrip() {
+    fn video_roundtrip() {
         let grid = make_grid(4, 3, 'A');
-        let encoded = encode_frame(&grid);
-        let (frame, consumed) = decode_frame(&encoded).expect("decode failed");
+        let encoded = encode_video(&grid);
+        let (msg, consumed) = decode_message(&encoded).expect("decode failed");
         assert_eq!(consumed, encoded.len());
-        assert_eq!(frame.width, 4);
-        assert_eq!(frame.height, 3);
-        assert_eq!(frame.cells.len(), 12);
-        assert!(frame.cells.iter().all(|c| c.ch == 'A' && c.color.is_none()));
+        match msg {
+            Message::Video(frame) => {
+                assert_eq!(frame.width, 4);
+                assert_eq!(frame.height, 3);
+                assert_eq!(frame.cells.len(), 12);
+                assert!(frame.cells.iter().all(|c| c.ch == 'A' && c.color.is_none()));
+            }
+            _ => panic!("expected video message"),
+        }
     }
 
     #[test]
     fn color_roundtrip() {
         let grid = make_color_grid(2, 2, '#', (255, 128, 0));
-        let encoded = encode_frame(&grid);
-        let (frame, _) = decode_frame(&encoded).expect("decode failed");
-        assert_eq!(frame.cells.len(), 4);
-        for cell in &frame.cells {
-            assert_eq!(cell.ch, '#');
-            assert_eq!(cell.color, Some((255, 128, 0)));
+        let encoded = encode_video(&grid);
+        let (msg, _) = decode_message(&encoded).expect("decode failed");
+        match msg {
+            Message::Video(frame) => {
+                assert_eq!(frame.cells.len(), 4);
+                for cell in &frame.cells {
+                    assert_eq!(cell.ch, '#');
+                    assert_eq!(cell.color, Some((255, 128, 0)));
+                }
+            }
+            _ => panic!("expected video message"),
         }
     }
 
     #[test]
     fn unicode_roundtrip() {
-        // Block characters, outline chars, dots — all non-ASCII.
         let chars = vec!['░', '▒', '▓', '█', '─', '╱', '│', '╲', '●', '◉'];
         for ch in chars {
             let grid = make_grid(2, 2, ch);
-            let encoded = encode_frame(&grid);
-            let (frame, _) = decode_frame(&encoded).expect("decode failed");
-            let restored = frame_to_grid(&frame);
-            assert_eq!(restored[0][0].ch, ch, "roundtrip failed for {:?}", ch);
+            let encoded = encode_video(&grid);
+            let (msg, _) = decode_message(&encoded).expect("decode failed");
+            match msg {
+                Message::Video(frame) => {
+                    let restored = frame_to_grid(&frame);
+                    assert_eq!(restored[0][0].ch, ch, "roundtrip failed for {:?}", ch);
+                }
+                _ => panic!("expected video"),
+            }
         }
+    }
+
+    #[test]
+    fn audio_roundtrip() {
+        let samples: Vec<i16> = vec![-32768, 0, 32767, 100, -100];
+        let encoded = encode_audio(&samples);
+        let (msg, consumed) = decode_message(&encoded).expect("decode failed");
+        assert_eq!(consumed, encoded.len());
+        match msg {
+            Message::Audio(decoded) => {
+                assert_eq!(decoded, samples);
+            }
+            _ => panic!("expected audio message"),
+        }
+    }
+
+    #[test]
+    fn multiplexed_stream() {
+        // Simulate a stream with video then audio then video.
+        let grid = make_grid(2, 2, 'X');
+        let samples: Vec<i16> = vec![1000, -1000, 500];
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&encode_video(&grid));
+        stream.extend_from_slice(&encode_audio(&samples));
+        stream.extend_from_slice(&encode_video(&grid));
+
+        let mut offset = 0;
+        let mut messages = Vec::new();
+        while offset < stream.len() {
+            match decode_message(&stream[offset..]) {
+                Some((msg, consumed)) => {
+                    messages.push(msg);
+                    offset += consumed;
+                }
+                None => break,
+            }
+        }
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(messages[0], Message::Video(_)));
+        assert!(matches!(messages[1], Message::Audio(_)));
+        assert!(matches!(messages[2], Message::Video(_)));
     }
 
     #[test]
     fn frame_to_grid_roundtrip() {
         let grid = make_color_grid(3, 2, 'X', (10, 20, 30));
-        let encoded = encode_frame(&grid);
-        let (frame, _) = decode_frame(&encoded).unwrap();
-        let restored = frame_to_grid(&frame);
-        assert_eq!(restored.len(), 2);
-        assert_eq!(restored[0].len(), 3);
-        assert_eq!(restored[0][0].ch, 'X');
-        assert_eq!(restored[0][0].color, Some((10, 20, 30)));
+        let encoded = encode_video(&grid);
+        let (msg, _) = decode_message(&encoded).unwrap();
+        match msg {
+            Message::Video(frame) => {
+                let restored = frame_to_grid(&frame);
+                assert_eq!(restored.len(), 2);
+                assert_eq!(restored[0].len(), 3);
+                assert_eq!(restored[0][0].ch, 'X');
+                assert_eq!(restored[0][0].color, Some((10, 20, 30)));
+            }
+            _ => panic!("expected video"),
+        }
     }
 
     #[test]
     fn empty_frame_roundtrip() {
         let grid: Vec<Vec<AsciiCell>> = vec![];
-        let encoded = encode_frame(&grid);
-        let (frame, consumed) = decode_frame(&encoded).expect("decode failed");
+        let encoded = encode_video(&grid);
+        let (msg, consumed) = decode_message(&encoded).expect("decode failed");
         assert_eq!(consumed, encoded.len());
-        assert_eq!(frame.width, 0);
-        assert_eq!(frame.height, 0);
-        assert_eq!(frame.cells.len(), 0);
+        match msg {
+            Message::Video(frame) => {
+                assert_eq!(frame.width, 0);
+                assert_eq!(frame.height, 0);
+                assert_eq!(frame.cells.len(), 0);
+            }
+            _ => panic!("expected video"),
+        }
     }
 
     #[test]
     fn partial_buffer_returns_none() {
         let grid = make_grid(5, 5, 'X');
-        let encoded = encode_frame(&grid);
-        assert!(decode_frame(&encoded[..encoded.len() - 1]).is_none());
-        assert!(decode_frame(&encoded[..4]).is_none());
-        assert!(decode_frame(&[]).is_none());
+        let encoded = encode_video(&grid);
+        assert!(decode_message(&encoded[..encoded.len() - 1]).is_none());
+        assert!(decode_message(&encoded[..2]).is_none());
+        assert!(decode_message(&[]).is_none());
     }
 
     #[test]

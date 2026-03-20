@@ -1,0 +1,23 @@
+FROM rust:1.83-bookworm AS builder
+
+# Install system deps needed to compile all crate dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libasound2-dev \
+    libv4l-dev \
+    libclang-dev \
+    clang \
+    meson \
+    ninja-build \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+RUN cargo build --release --features relay --bin txxxt-relay
+
+# --- Runtime (tiny image) ---
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/txxxt-relay /usr/local/bin/
+CMD ["txxxt-relay"]

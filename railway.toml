@@ -1,0 +1,5 @@
+[build]
+dockerfilePath = "Dockerfile.relay"
+
+[deploy]
+startCommand = "txxxt-relay"

@@ -168,6 +168,70 @@ pub fn grid_to_html(grid: &[Vec<AsciiCell>]) -> String {
     out
 }
 
+/// Composite a PIP overlay onto a base grid (like the call screen).
+/// Returns a new grid with the PIP baked in at the specified position and size.
+pub fn composite_pip(
+    base: &[Vec<AsciiCell>],
+    pip: &[Vec<AsciiCell>],
+    pip_x: usize,
+    pip_y: usize,
+    pip_w: usize,
+    pip_h: usize,
+) -> Vec<Vec<AsciiCell>> {
+    let mut result: Vec<Vec<AsciiCell>> = base.to_vec();
+
+    // Rescale PIP content to fit inside pip area (minus 2 for border).
+    let inner_w = pip_w.saturating_sub(2);
+    let inner_h = pip_h.saturating_sub(2);
+    if inner_w == 0 || inner_h == 0 || pip.is_empty() {
+        return result;
+    }
+    let scaled_pip = crate::net::protocol::rescale_grid(pip, inner_w, inner_h);
+
+    let base_h = result.len();
+    let base_w = result.first().map(|r| r.len()).unwrap_or(0);
+
+    // Draw border.
+    for dy in 0..pip_h {
+        let y = pip_y + dy;
+        if y >= base_h {
+            break;
+        }
+        for dx in 0..pip_w {
+            let x = pip_x + dx;
+            if x >= base_w {
+                break;
+            }
+            let ch = if dy == 0 && dx == 0 {
+                '╭'
+            } else if dy == 0 && dx == pip_w - 1 {
+                '╮'
+            } else if dy == pip_h - 1 && dx == 0 {
+                '╰'
+            } else if dy == pip_h - 1 && dx == pip_w - 1 {
+                '╯'
+            } else if dy == 0 || dy == pip_h - 1 {
+                '─'
+            } else if dx == 0 || dx == pip_w - 1 {
+                '│'
+            } else {
+                // Inner area: fill from scaled PIP.
+                let iy = dy - 1;
+                let ix = dx - 1;
+                if iy < scaled_pip.len() && ix < scaled_pip[iy].len() {
+                    result[y][x] = scaled_pip[iy][ix].clone();
+                    continue;
+                } else {
+                    ' '
+                }
+            };
+            result[y][x] = AsciiCell { ch, color: None };
+        }
+    }
+
+    result
+}
+
 /// Save grid as HTML.
 /// Uses custom `save_dir` if provided, otherwise ~/Downloads.
 /// Returns the display path string on success.

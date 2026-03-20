@@ -60,6 +60,7 @@ impl PipCorner {
         }
     }
 
+    #[allow(dead_code)]
     fn label(self) -> &'static str {
         match self {
             PipCorner::TopRight => "top-right",
@@ -228,6 +229,28 @@ pub struct App {
     pip_corner: PipCorner,
     /// PIP size index into PIP_SCALES.
     pip_scale_idx: usize,
+    /// Audio capture stream handle (kept alive during call).
+    #[allow(dead_code)]
+    audio_capture: Option<cpal::Stream>,
+    /// Audio capture receiver (PCM chunks from mic).
+    audio_capture_rx: Option<mpsc::Receiver<Vec<i16>>>,
+    /// Audio playback stream handle (kept alive during call).
+    #[allow(dead_code)]
+    audio_playback: Option<cpal::Stream>,
+    /// Audio playback sender (PCM chunks to speaker).
+    audio_playback_tx: Option<mpsc::Sender<Vec<i16>>>,
+    /// Audio receiver from network (decoded audio chunks from peer).
+    audio_net_rx: Option<mpsc::Receiver<Vec<i16>>>,
+    /// Whether audio is muted.
+    audio_muted: bool,
+    /// Whether camera is hidden (stop sending video + hide PIP).
+    camera_hidden: bool,
+    /// Local mic audio level (0.0 – 1.0).
+    audio_level_local: f32,
+    /// Remote audio level (0.0 – 1.0).
+    audio_level_remote: f32,
+    /// WebRTC echo canceller.
+    echo_canceller: Option<crate::audio::EchoCanceller>,
 }
 
 /// A directory entry for the preference file picker.
@@ -266,6 +289,16 @@ impl App {
             listener_rx: None,
             pip_corner: PipCorner::TopRight,
             pip_scale_idx: PIP_DEFAULT_SCALE_IDX,
+            audio_capture: None,
+            audio_capture_rx: None,
+            audio_playback: None,
+            audio_playback_tx: None,
+            audio_net_rx: None,
+            audio_muted: false,
+            camera_hidden: false,
+            audio_level_local: 0.0,
+            audio_level_remote: 0.0,
+            echo_canceller: None,
         }
     }
 
@@ -341,8 +374,9 @@ impl App {
         let writer_stream = stream;
 
         let (remote_tx, remote_rx) = mpsc::channel::<Vec<Vec<AsciiCell>>>();
+        let (audio_net_tx, audio_net_rx) = mpsc::channel::<Vec<i16>>();
 
-        // Spawn reader thread.
+        // Spawn reader thread — handles both video and audio messages.
         std::thread::spawn(move || {
             use std::io::Read;
             let mut reader = reader_stream;
@@ -355,9 +389,16 @@ impl App {
                         buf.extend_from_slice(&tmp[..n]);
                         let mut latest_grid = None;
                         loop {
-                            match decode_frame(&buf) {
-                                Some((frame, consumed)) => {
-                                    latest_grid = Some(frame_to_grid(&frame));
+                            match decode_message(&buf) {
+                                Some((msg, consumed)) => {
+                                    match msg {
+                                        Message::Video(frame) => {
+                                            latest_grid = Some(frame_to_grid(&frame));
+                                        }
+                                        Message::Audio(samples) => {
+                                            let _ = audio_net_tx.send(samples);
+                                        }
+                                    }
                                     buf.drain(..consumed);
                                 }
                                 None => break,
@@ -365,7 +406,7 @@ impl App {
                         }
                         if let Some(grid) = latest_grid {
                             if remote_tx.send(grid).is_err() {
-                                break; // main loop dropped receiver
+                                break;
                             }
                         }
                     }
@@ -374,11 +415,47 @@ impl App {
             }
         });
 
+        // Start audio capture and playback.
+        let mut capture_rate = 48000u32;
+        let (audio_capture, audio_capture_rx) = match crate::audio::start_capture() {
+            Ok((stream, rx, rate)) => {
+                capture_rate = rate;
+                (Some(stream), Some(rx))
+            }
+            Err(e) => {
+                self.flash(format!("mic error: {}", e));
+                (None, None)
+            }
+        };
+        let (audio_playback, audio_playback_tx) = match crate::audio::start_playback() {
+            Ok((stream, tx, _rate)) => (Some(stream), Some(tx)),
+            Err(e) => {
+                self.flash(format!("speaker error: {}", e));
+                (None, None)
+            }
+        };
+
+        // Initialize WebRTC echo canceller.
+        let echo_canceller = match crate::audio::EchoCanceller::new(capture_rate) {
+            Ok(ec) => Some(ec),
+            Err(e) => {
+                self.flash(format!("AEC init error: {}", e));
+                None
+            }
+        };
+
         self.mode = AppMode::Call { peer_addr };
         self.remote_rx = Some(remote_rx);
         self.net_writer = Some(writer_stream);
         self.remote_grid = None;
         self.panel = None;
+        self.audio_capture = audio_capture;
+        self.audio_capture_rx = audio_capture_rx;
+        self.audio_playback = audio_playback;
+        self.audio_playback_tx = audio_playback_tx;
+        self.audio_net_rx = Some(audio_net_rx);
+        self.audio_muted = false;
+        self.echo_canceller = echo_canceller;
     }
 
     /// End the current call and return to local mode.
@@ -389,6 +466,13 @@ impl App {
         self.remote_grid = None;
         self.listener_rx = None;
         self.listener_handle = None;
+        // Drop audio streams and AEC.
+        self.audio_capture = None;
+        self.audio_capture_rx = None;
+        self.audio_playback = None;
+        self.audio_playback_tx = None;
+        self.audio_net_rx = None;
+        self.echo_canceller = None;
         self.flash("call ended".into());
     }
 
@@ -656,6 +740,20 @@ impl App {
                     self.pip_corner = self.pip_corner.next();
                 }
             }
+            KeyCode::Char('m') => {
+                if matches!(self.mode, AppMode::Call { .. }) {
+                    self.audio_muted = !self.audio_muted;
+                    let label = if self.audio_muted { "muted" } else { "unmuted" };
+                    self.flash(label.into());
+                }
+            }
+            KeyCode::Char('h') => {
+                if matches!(self.mode, AppMode::Call { .. }) {
+                    self.camera_hidden = !self.camera_hidden;
+                    let label = if self.camera_hidden { "camera off" } else { "camera on" };
+                    self.flash(label.into());
+                }
+            }
             _ => {}
         }
         None
@@ -886,20 +984,79 @@ fn run_main_loop(
             None
         };
 
-        // Send local frame to peer if in call.
+        // Send local frame + audio to peer if in call.
         if in_call {
-            if let Some(ref grid) = ascii_grid {
-                use std::io::Write;
-                let encoded = encode_frame(grid);
-                let send_ok = if let Some(ref mut writer) = app.net_writer {
-                    writer.write_all(&encoded).is_ok()
-                } else {
-                    false
-                };
-                if !send_ok && app.net_writer.is_some() {
-                    app.end_call();
-                    app.flash("connection lost".into());
+            use std::io::Write;
+            let mut send_ok = true;
+
+            // Send video (skip if camera hidden).
+            if !app.camera_hidden {
+                if let Some(ref grid) = ascii_grid {
+                    let encoded = encode_frame(grid);
+                    if let Some(ref mut writer) = app.net_writer {
+                        if writer.write_all(&encoded).is_err() {
+                            send_ok = false;
+                        }
+                    }
                 }
+            }
+
+            // Step 1: Forward received audio to playback + feed AEC render.
+            // Must happen BEFORE capture processing so AEC has reference signal.
+            if let Some(ref rx) = app.audio_net_rx {
+                let mut peak: f32 = 0.0;
+                while let Ok(samples) = rx.try_recv() {
+                    for &s in &samples {
+                        let abs = (s as f32 / 32767.0).abs();
+                        if abs > peak { peak = abs; }
+                    }
+                    // Feed to AEC as render (speaker) reference.
+                    if let Some(ref mut ec) = app.echo_canceller {
+                        ec.analyze_render(&samples);
+                    }
+                    if let Some(ref tx) = app.audio_playback_tx {
+                        let _ = tx.send(samples);
+                    }
+                }
+                app.audio_level_remote = app.audio_level_remote * 0.7 + peak * 0.3;
+            }
+
+            // Step 2: Process captured mic audio through AEC + send.
+            if send_ok {
+                if let Some(ref rx) = app.audio_capture_rx {
+                    let mut peak: f32 = 0.0;
+                    while let Ok(samples) = rx.try_recv() {
+                        // Process through echo canceller.
+                        let processed = if let Some(ref mut ec) = app.echo_canceller {
+                            ec.process_capture(&samples)
+                        } else {
+                            samples
+                        };
+
+                        // Track level (post-AEC).
+                        for &s in &processed {
+                            let abs = (s as f32 / 32767.0).abs();
+                            if abs > peak { peak = abs; }
+                        }
+                        // Send if not muted.
+                        if !app.audio_muted && !processed.is_empty() {
+                            let encoded = encode_audio(&processed);
+                            if let Some(ref mut writer) = app.net_writer {
+                                if writer.write_all(&encoded).is_err() {
+                                    send_ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Smooth decay.
+                    app.audio_level_local = app.audio_level_local * 0.7 + peak * 0.3;
+                }
+            }
+
+            if !send_ok && app.net_writer.is_some() {
+                app.end_call();
+                app.flash("connection lost".into());
             }
         }
 
@@ -929,17 +1086,33 @@ fn run_main_loop(
         let app_mode = app.mode.clone();
         let pip_corner = app.pip_corner;
         let pip_scale = PIP_SCALES[app.pip_scale_idx] as u16;
+        let audio_muted = app.audio_muted;
+        let camera_hidden = app.camera_hidden;
+        let audio_level_local = app.audio_level_local;
+        let _audio_level_remote = app.audio_level_remote;
 
         terminal.draw(|f| {
             let area = f.area();
-            let chunks = Layout::vertical([
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .split(area);
+            let has_audio_bar = matches!(&app_mode, AppMode::Call { .. });
+            let chunks = if has_audio_bar {
+                Layout::vertical([
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                ])
+                .split(area)
+            } else {
+                Layout::vertical([
+                    Constraint::Min(1),
+                    Constraint::Length(0),
+                    Constraint::Length(1),
+                ])
+                .split(area)
+            };
 
             let video_area = chunks[0];
-            let status_area = chunks[1];
+            let audio_bar_area = chunks[1];
+            let status_area = chunks[2];
 
             match &app_mode {
                 AppMode::Local | AppMode::Listening { .. } => {
@@ -997,7 +1170,7 @@ fn run_main_loop(
                         }
                     }
 
-                    // Local: PIP overlay — size and position configurable.
+                    // Local: PIP overlay.
                     let pip_w = (video_area.width * pip_scale / 100).max(16);
                     let pip_h = (video_area.height * pip_scale / 100).max(6);
                     let (pip_x, pip_y) = match pip_corner {
@@ -1021,25 +1194,46 @@ fn run_main_loop(
                     let pip_rect = Rect::new(pip_x, pip_y, pip_w, pip_h);
 
                     f.render_widget(Clear, pip_rect);
-                    match ascii_ref {
-                        Some(grid) => {
-                            let inner_cols = pip_w.saturating_sub(2) as usize;
-                            let inner_rows = pip_h.saturating_sub(2) as usize;
-                            let scaled = crate::net::protocol::rescale_grid(grid, inner_cols, inner_rows);
-                            let lines = ascii_to_lines(&scaled);
-                            let p = Paragraph::new(lines).block(
-                                Block::default()
-                                    .borders(Borders::ALL)
-                                    .border_type(BorderType::Rounded)
-                                    .title(" me "),
-                            );
-                            f.render_widget(p, pip_rect);
+                    if camera_hidden {
+                        // Camera off: show ❌ centered in PIP.
+                        let inner_h = pip_h.saturating_sub(2) as usize;
+                        let mid_row = inner_h / 2;
+                        let mut lines: Vec<Line<'static>> = Vec::with_capacity(inner_h);
+                        for i in 0..inner_h {
+                            if i == mid_row {
+                                lines.push(Line::from("❌").alignment(ratatui::layout::Alignment::Center));
+                            } else {
+                                lines.push(Line::from(""));
+                            }
                         }
-                        None => {
-                            let p = Paragraph::new("no cam")
-                                .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)
-                                    .title(" me "));
-                            f.render_widget(p, pip_rect);
+                        let p = Paragraph::new(lines).block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
+                                .title(" me "),
+                        );
+                        f.render_widget(p, pip_rect);
+                    } else {
+                        match ascii_ref {
+                            Some(grid) => {
+                                let inner_cols = pip_w.saturating_sub(2) as usize;
+                                let inner_rows = pip_h.saturating_sub(2) as usize;
+                                let scaled = crate::net::protocol::rescale_grid(grid, inner_cols, inner_rows);
+                                let lines = ascii_to_lines(&scaled);
+                                let p = Paragraph::new(lines).block(
+                                    Block::default()
+                                        .borders(Borders::ALL)
+                                        .border_type(BorderType::Rounded)
+                                        .title(" me "),
+                                );
+                                f.render_widget(p, pip_rect);
+                            }
+                            None => {
+                                let p = Paragraph::new("no cam")
+                                    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)
+                                        .title(" me "));
+                                f.render_widget(p, pip_rect);
+                            }
                         }
                     }
 
@@ -1056,6 +1250,33 @@ fn run_main_loop(
                 render_flash_overlay(f, video_area, flash_text);
             }
 
+            // Audio level bar (call mode only) — local mic only.
+            if has_audio_bar {
+                let bar_w = audio_bar_area.width.saturating_sub(4) as usize;
+                if audio_muted {
+                    // Muted: show red strikethrough bar.
+                    let muted_bar = format!(
+                        " 🔇 {}",
+                        "─".repeat(bar_w),
+                    );
+                    let bar_line = Paragraph::new(muted_bar).style(
+                        Style::default().fg(Color::Red).bg(Color::DarkGray),
+                    );
+                    f.render_widget(bar_line, audio_bar_area);
+                } else {
+                    let filled = ((audio_level_local * bar_w as f32) as usize).min(bar_w);
+                    let mic_bar = format!(
+                        " 🎙 {}{}",
+                        "█".repeat(filled),
+                        " ".repeat(bar_w.saturating_sub(filled)),
+                    );
+                    let bar_line = Paragraph::new(mic_bar).style(
+                        Style::default().fg(Color::Green).bg(Color::DarkGray),
+                    );
+                    f.render_widget(bar_line, audio_bar_area);
+                }
+            }
+
             // Status bar.
             let style_label = current_style.label();
             let color_label = if color_on { "COLOR" } else { "MONO" };
@@ -1063,10 +1284,14 @@ fn run_main_loop(
             let mode_info = match &app_mode {
                 AppMode::Local => "[c]all [l]isten".to_string(),
                 AppMode::Listening { port } => format!("listening :{} | [q]cancel", port),
-                AppMode::Call { peer_addr } => format!(
-                    "{} | [p]ip:{} [+/-]{}% | [q]hangup",
-                    peer_addr, pip_corner.label(), pip_scale,
-                ),
+                AppMode::Call { peer_addr } => {
+                    let mic = if audio_muted { "🔇" } else { "🎙" };
+                    let cam = if camera_hidden { "📷❌" } else { "📷" };
+                    format!(
+                        "{} | {}[m] {}[h] | [p]ip [+/-] | [q]uit",
+                        peer_addr, mic, cam,
+                    )
+                }
             };
             let status = format!(
                 " {} | {}{} | FPS: {:.0} | {} | [v]style [f]settings [y]save",
@@ -1094,7 +1319,37 @@ fn run_main_loop(
             if let Event::Key(key) = event::read()? {
                 let action = app.handle_key(key);
                 if let Some(ExportAction::Save) = action {
-                    if let Some(ref grid) = app.last_frame_grid {
+                    // In call mode: composite PIP onto remote grid (what you see = what you get).
+                    let export_grid = if matches!(app.mode, AppMode::Call { .. }) {
+                        if let Some(ref remote) = app.remote_grid {
+                            let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+                            let cols = term_size.0.saturating_sub(2) as usize;
+                            let rows = term_size.1.saturating_sub(4) as usize; // status + audio bar + borders
+                            let scaled_remote = crate::net::protocol::rescale_grid(remote, cols, rows);
+
+                            let pip_scale = PIP_SCALES[app.pip_scale_idx] as usize;
+                            let pip_w = (cols * pip_scale / 100).max(16);
+                            let pip_h = (rows * pip_scale / 100).max(6);
+                            let (pip_x, pip_y) = match app.pip_corner {
+                                PipCorner::TopRight => (cols.saturating_sub(pip_w + 1), 0),
+                                PipCorner::TopLeft => (0, 0),
+                                PipCorner::BottomRight => (cols.saturating_sub(pip_w + 1), rows.saturating_sub(pip_h + 1)),
+                                PipCorner::BottomLeft => (0, rows.saturating_sub(pip_h + 1)),
+                            };
+
+                            if let Some(ref local) = app.last_frame_grid {
+                                Some(crate::export::composite_pip(&scaled_remote, local, pip_x, pip_y, pip_w, pip_h))
+                            } else {
+                                Some(scaled_remote)
+                            }
+                        } else {
+                            app.last_frame_grid.clone()
+                        }
+                    } else {
+                        app.last_frame_grid.clone()
+                    };
+
+                    if let Some(ref grid) = export_grid {
                         match crate::export::save_to_file(grid, app.user_config.save_dir.as_deref()) {
                             Ok(path) => app.flash(format!("saved to {}", path)),
                             Err(e) => app.flash(format!("Error: {}", e)),
@@ -1414,7 +1669,7 @@ fn ascii_to_lines(grid: &[Vec<AsciiCell>]) -> Vec<Line<'static>> {
 }
 
 use std::net::SocketAddr;
-use crate::net::protocol::{encode_frame, decode_frame, frame_to_grid};
+use crate::net::protocol::{encode_frame, encode_audio, decode_message, frame_to_grid, Message};
 
 /// CLI entry point: connect to peer, then run viewer in call mode.
 pub fn run_call(

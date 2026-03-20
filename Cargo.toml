@@ -5,6 +5,19 @@ edition = "2021"
 description = "Terminal-based ASCII video call tool"
 license = "MIT"
 
+[[bin]]
+name = "txxxt"
+path = "src/main.rs"
+
+[[bin]]
+name = "txxxt-relay"
+path = "src/bin/relay.rs"
+required-features = ["relay"]
+
+[features]
+default = []
+relay = []
+
 [dependencies]
 # TUI
 ratatui = "0.29"
@@ -24,6 +37,10 @@ anyhow = "1"
 
 # Clipboard
 arboard = "3"
+
+# Audio
+cpal = "0.15"
+webrtc-audio-processing = { version = "2", features = ["bundled"] }
 
 # Config persistence
 serde = { version = "1", features = ["derive"] }

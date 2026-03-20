@@ -1,3 +1,4 @@
+mod audio;
 mod background;
 mod camera;
 mod charsets;
