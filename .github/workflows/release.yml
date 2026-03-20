@@ -43,7 +43,15 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libv4l-dev libudev-dev
+          sudo apt-get install -y libv4l-dev libudev-dev libasound2-dev meson ninja-build cmake clang pkg-config
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install meson ninja cmake
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        run: pip install meson ninja
 
       - name: Build release binary
         env:
