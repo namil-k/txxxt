@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>txxxt — terminal video call</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+    background: #0a0a0a;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .container {
+    max-width: 480px;
+    width: 100%;
+    padding: 2rem;
+  }
+  h1 { font-size: 2rem; color: #fff; margin-bottom: 0.5rem; }
+  .subtitle { color: #888; margin-bottom: 2rem; }
+  .code-box {
+    background: #1a1a2e;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 1.5rem;
+    text-align: center;
+    margin-bottom: 2rem;
+  }
+  .code-label { color: #888; font-size: 0.85rem; margin-bottom: 0.5rem; }
+  .code { font-size: 3rem; font-weight: bold; color: #00ff88; letter-spacing: 0.3em; }
+  .steps {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 8px;
+    padding: 1.5rem;
+  }
+  .steps h2 { font-size: 0.9rem; color: #888; margin-bottom: 1rem; }
+  .step { margin-bottom: 1rem; }
+  .step-label { color: #666; font-size: 0.8rem; margin-bottom: 0.3rem; }
+  pre {
+    background: #0a0a0a;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 0.6rem 0.8rem;
+    overflow-x: auto;
+    cursor: pointer;
+    position: relative;
+    transition: border-color 0.2s;
+  }
+  pre:hover { border-color: #00ff88; }
+  pre code { color: #00ff88; font-size: 0.9rem; }
+  .copied {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    color: #00ff88; font-size: 0.75rem; opacity: 0; transition: opacity 0.3s;
+  }
+  .copied.show { opacity: 1; }
+  .no-code { text-align: center; }
+  .no-code h2 { font-size: 1.5rem; color: #fff; margin-bottom: 1rem; }
+  .no-code p { color: #888; margin-bottom: 1rem; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="container" id="app">
+  <!-- Room code page (hidden by default) -->
+  <div id="room-page" style="display:none">
+    <h1>txxxt</h1>
+    <p class="subtitle">terminal video call</p>
+    <div class="code-box">
+      <div class="code-label">room code</div>
+      <div class="code" id="room-code"></div>
+    </div>
+    <div class="steps">
+      <h2>join this call</h2>
+      <div class="step">
+        <div class="step-label">if txxxt is installed:</div>
+        <pre id="join-cmd" onclick="copyJoin()">
+          <code id="join-cmd-text"></code>
+          <span class="copied" id="join-copied">copied!</span>
+        </pre>
+      </div>
+      <div class="step">
+        <div class="step-label">first time? install first:</div>
+        <pre id="install-cmd" onclick="copyInstall()">
+          <code>$ curl -fsSL ...install.sh | bash</code>
+          <span class="copied" id="install-copied">copied!</span>
+        </pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Landing page (hidden by default) -->
+  <div id="landing-page" style="display:none">
+    <div class="no-code">
+      <h2>txxxt</h2>
+      <p>ascii webcam viewer &amp; video call<br>in your terminal</p>
+      <pre id="landing-install" onclick="copyInstall()">
+        <code>$ curl -fsSL ...install.sh | bash</code>
+        <span class="copied" id="landing-copied">copied!</span>
+      </pre>
+      <p style="color:#666;font-size:0.8rem;">then run: txxxt</p>
+    </div>
+  </div>
+</div>
+
+<script>
+var INSTALL_CMD = 'curl -fsSL https://raw.githubusercontent.com/kimnam1/txxxt/main/install.sh | bash';
+var path = window.location.pathname.replace(/^\/+/, '').replace(/\/+$/, '');
+var code = (path && /^[A-Za-z0-9]{2,8}$/.test(path)) ? path.toUpperCase() : null;
+
+if (code) {
+  document.getElementById('room-page').style.display = 'block';
+  document.getElementById('room-code').textContent = code;
+  document.getElementById('join-cmd-text').textContent = '$ txxxt ' + code;
+} else {
+  document.getElementById('landing-page').style.display = 'block';
+}
+
+function flashCopied(id) {
+  var el = document.getElementById(id);
+  el.classList.add('show');
+  setTimeout(function() { el.classList.remove('show'); }, 1500);
+}
+
+function copyJoin() {
+  navigator.clipboard.writeText('txxxt ' + code);
+  flashCopied('join-copied');
+}
+
+function copyInstall() {
+  navigator.clipboard.writeText(INSTALL_CMD);
+  flashCopied('install-copied');
+  flashCopied('landing-copied');
+}
+</script>
+</body>
+</html>

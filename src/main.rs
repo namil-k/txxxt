@@ -17,6 +17,10 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
+    /// Room code to join (e.g., txxxt AXBK)
+    #[arg(index = 1)]
+    code: Option<String>,
+
     /// Use a dummy test pattern instead of the real camera (for testing P2P locally)
     #[arg(long)]
     dummy: bool,
@@ -55,6 +59,11 @@ fn main() -> Result<()> {
     };
 
     match cli.command {
+        None if cli.code.is_some() => {
+            // Join relay room directly: txxxt AXBK
+            let code = cli.code.unwrap();
+            tui::run_viewer_with_code(camera, &code)?;
+        }
         None => {
             // Default: local ASCII webcam viewer (can start calls from TUI).
             tui::run_viewer(camera)?;

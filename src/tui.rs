@@ -559,16 +559,17 @@ impl App {
         if let Some(ref rx) = self.relay_rx {
             if let Ok((kind, data)) = rx.try_recv() {
                 if kind == "CODE" {
+                    let url = format!("https://txxxt.me/{}", data);
                     let mut copied = false;
                     if let Ok(mut clip) = arboard::Clipboard::new() {
-                        if clip.set_text(&data).is_ok() {
+                        if clip.set_text(&url).is_ok() {
                             copied = true;
                         }
                     }
                     if copied {
-                        self.flash(format!("room: {} (copied!)", data));
+                        self.flash(format!("txxxt.me/{} copied!", data));
                     } else {
-                        self.flash(format!("room: {} — share this code", data));
+                        self.flash(format!("share: txxxt.me/{}", data));
                     }
                     self.relay_code = Some(data);
                 } else if kind == "PAIRED" {
@@ -1063,6 +1064,29 @@ fn get_local_ip() -> Option<String> {
     socket.connect("8.8.8.8:80").ok()?;
     let addr = socket.local_addr().ok()?;
     Some(addr.ip().to_string())
+}
+
+/// Run the viewer TUI and immediately join a relay room.
+pub fn run_viewer_with_code(camera: CameraCapture, code: &str) -> Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    stdout.execute(EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut app = App::new();
+    app.user_config = crate::config::load();
+    app.user_config.apply_to(&mut app.config);
+    // Auto-join relay room.
+    app.start_relay_join(code);
+
+    let result = run_main_loop(&mut app, camera, &mut terminal);
+
+    crate::config::save(&crate::config::UserConfig::from_render_config(&app.config, &app.user_config));
+
+    disable_raw_mode()?;
+    io::stdout().execute(LeaveAlternateScreen)?;
+    result
 }
 
 /// Run the local webcam viewer TUI.

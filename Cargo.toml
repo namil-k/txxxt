@@ -2,6 +2,7 @@
 name = "txxxt"
 version = "0.3.0"
 edition = "2021"
+default-run = "txxxt"
 description = "Terminal-based ASCII video call tool"
 license = "MIT"
 
