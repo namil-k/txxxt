@@ -19,9 +19,6 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             name: txxxt-linux-x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            name: txxxt-windows-x86_64
 
     runs-on: ${{ matrix.os }}
     defaults:
@@ -46,10 +43,6 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install meson ninja cmake
 
-      - name: Install Windows dependencies
-        if: runner.os == 'Windows'
-        run: pip install meson ninja
-
       - name: Build release binary
         env:
           BUILD_TARGET: ${{ matrix.target }}
@@ -64,15 +57,6 @@ jobs:
           cp "target/${BUILD_TARGET}/release/txxxt" "${ARTIFACT_NAME}"
           chmod +x "${ARTIFACT_NAME}"
           tar czf "${ARTIFACT_NAME}.tar.gz" "${ARTIFACT_NAME}"
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        env:
-          BUILD_TARGET: ${{ matrix.target }}
-          ARTIFACT_NAME: ${{ matrix.name }}
-        run: |
-          cp "target/${BUILD_TARGET}/release/txxxt.exe" "${ARTIFACT_NAME}.exe"
-          7z a "${ARTIFACT_NAME}.zip" "${ARTIFACT_NAME}.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -96,4 +80,3 @@ jobs:
           files: |
             txxxt-macos-arm64.tar.gz
             txxxt-linux-x86_64.tar.gz
-            txxxt-windows-x86_64.zip
