@@ -15,34 +15,44 @@ path = "src/bin/relay.rs"
 required-features = ["relay"]
 
 [features]
-default = []
+default = ["client"]
+client = [
+    "dep:ratatui",
+    "dep:crossterm",
+    "dep:nokhwa",
+    "dep:image",
+    "dep:arboard",
+    "dep:cpal",
+    "dep:webrtc-audio-processing",
+    "dep:serde",
+    "dep:toml",
+    "dep:dirs",
+]
 relay = []
 
 [dependencies]
-# TUI
-ratatui = "0.29"
-crossterm = "0.28"
-
-# Camera
-nokhwa = { version = "0.10", features = ["input-native"] }
-
-# Image processing
-image = "0.25"
-
-# CLI
+# Shared
 clap = { version = "4", features = ["derive"] }
-
-# Error handling
 anyhow = "1"
 
-# Clipboard
-arboard = "3"
+# TUI (client only)
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.28", optional = true }
 
-# Audio
-cpal = "0.15"
-webrtc-audio-processing = { version = "2", features = ["bundled"] }
+# Camera (client only)
+nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 
-# Config persistence
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-dirs = "5"
+# Image processing (client only)
+image = { version = "0.25", optional = true }
+
+# Clipboard (client only)
+arboard = { version = "3", optional = true }
+
+# Audio (client only)
+cpal = { version = "0.15", optional = true }
+webrtc-audio-processing = { version = "2", features = ["bundled"], optional = true }
+
+# Config persistence (client only)
+serde = { version = "1", features = ["derive"], optional = true }
+toml = { version = "0.8", optional = true }
+dirs = { version = "5", optional = true }
