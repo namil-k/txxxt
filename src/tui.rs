@@ -452,6 +452,10 @@ impl App {
 
     /// Create a relay room: connect to relay server, send CREATE, get room code.
     fn start_relay_create(&mut self) {
+        if let Some(latest) = crate::check_version() {
+            self.flash(format!("update available: v{} → v{}. run 'txxxt update'", env!("CARGO_PKG_VERSION"), latest));
+            return;
+        }
         self.flash("connecting to relay...".into());
         let (tx, rx) = mpsc::channel();
 
@@ -494,6 +498,10 @@ impl App {
 
     /// Join a relay room with a code.
     fn start_relay_join(&mut self, code: &str) {
+        if let Some(latest) = crate::check_version() {
+            self.flash(format!("update available: v{} → v{}. run 'txxxt update'", env!("CARGO_PKG_VERSION"), latest));
+            return;
+        }
         let code = code.trim().to_uppercase();
         self.flash(format!("joining room {}...", code));
 

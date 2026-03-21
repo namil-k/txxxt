@@ -41,11 +41,6 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Check for updates before doing anything (skip for `txxxt update` itself).
-    if !matches!(cli.command, Some(Commands::Update)) {
-        check_version();
-    }
-
     // Re-validate txxxt+ license if needed (every 7 days).
     config::revalidate_license();
 
@@ -77,6 +72,11 @@ fn main() -> Result<()> {
 
     match cli.command {
         None if cli.code.is_some() => {
+            // Check for updates before joining a call.
+            if let Some(latest) = check_version() {
+                eprintln!("update available: v{} → v{}", env!("CARGO_PKG_VERSION"), latest);
+                eprintln!("run 'txxxt update' to upgrade.\n");
+            }
             // Join relay room directly: txxxt AXBK
             let code = cli.code.unwrap();
             tui::run_viewer_with_code(camera, &code)?;
@@ -91,14 +91,10 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Check if current version is latest. If not, auto-update and re-exec.
-fn check_version() {
+/// Check if an update is available. Returns Some(latest_version) if update needed.
+/// Does NOT auto-install — callers should notify the user.
+pub fn check_version() -> Option<String> {
     use std::process::Command;
-
-    // Prevent infinite re-exec loop: if we already checked, skip.
-    if std::env::var("TXXXT_UPDATED").is_ok() {
-        return;
-    }
 
     let current = env!("CARGO_PKG_VERSION");
 
@@ -111,9 +107,6 @@ fn check_version() {
     let latest = match output {
         Ok(o) if o.status.success() => {
             let body = String::from_utf8_lossy(&o.stdout);
-            // Parse "tag_name": "v0.4.0" from JSON.
-            // After splitting on "tag_name", remainder is: `: "v0.4.0", ...`
-            // split('"') → [`: `, `v0.4.0`, `, ...`] → nth(1) = version
             body.split("\"tag_name\"")
                 .nth(1)
                 .and_then(|s| s.split('"').nth(1))
@@ -122,34 +115,12 @@ fn check_version() {
         _ => None,
     };
 
-    let Some(latest) = latest else { return };
+    let latest = latest?;
 
     if latest == current {
-        return;
-    }
-
-    eprintln!("update available: v{} → v{}", current, latest);
-    eprintln!("updating...");
-
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg("curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/main/install.sh | bash")
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {
-            eprintln!("updated! restarting...");
-            // Re-exec with same arguments, with guard env to prevent loop.
-            let args: Vec<String> = std::env::args().collect();
-            let err = Command::new(&args[0])
-                .args(&args[1..])
-                .env("TXXXT_UPDATED", "1")
-                .status();
-            std::process::exit(err.map(|s| s.code().unwrap_or(0)).unwrap_or(1));
-        }
-        _ => {
-            eprintln!("update failed, continuing with v{}...", current);
-        }
+        None
+    } else {
+        Some(latest)
     }
 }
 
