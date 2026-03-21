@@ -280,6 +280,10 @@ pub struct App {
     remote_status_rx: Option<mpsc::Receiver<PeerStatus>>,
     /// Call start time (for 5-min countdown).
     call_start: Option<Instant>,
+    /// Receiver for incoming call notifications from presence thread.
+    incoming_rx: Option<std::sync::mpsc::Receiver<crate::net::presence::IncomingCall>>,
+    /// Pending incoming call waiting for user to accept/decline.
+    pending_call: Option<crate::net::presence::IncomingCall>,
 }
 
 /// A directory entry for the preference file picker.
@@ -337,6 +341,8 @@ impl App {
             remote_status: None,
             remote_status_rx: None,
             call_start: None,
+            incoming_rx: None,
+            pending_call: None,
         }
     }
 
@@ -879,6 +885,25 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<ExportAction> {
+        // Handle incoming call popup first.
+        if self.pending_call.is_some() {
+            match key.code {
+                KeyCode::Char('a') | KeyCode::Char('A') => {
+                    // Accept: join the room.
+                    if let Some(call) = self.pending_call.take() {
+                        self.start_relay_join(&call.code);
+                    }
+                    return None;
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Esc => {
+                    // Decline: dismiss popup.
+                    self.pending_call = None;
+                    return None;
+                }
+                _ => return None,
+            }
+        }
+
         // If a panel is open, route input there first.
         let (consumed, action) = self.handle_panel_key(key);
         if consumed {
@@ -1117,7 +1142,11 @@ fn pref_tab_complete(input: &str) -> Vec<String> {
 /// Detect the local LAN IP address by opening a UDP socket.
 /// This doesn't send any data — it just lets the OS pick the right interface.
 /// Run the viewer TUI and immediately join a relay room.
-pub fn run_viewer_with_code(camera: CameraCapture, code: &str) -> Result<()> {
+pub fn run_viewer_with_code(
+    camera: CameraCapture,
+    code: &str,
+    incoming_rx: Option<std::sync::mpsc::Receiver<crate::net::presence::IncomingCall>>,
+) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
@@ -1127,6 +1156,7 @@ pub fn run_viewer_with_code(camera: CameraCapture, code: &str) -> Result<()> {
     let mut app = App::new();
     app.user_config = crate::config::load();
     app.user_config.apply_to(&mut app.config);
+    app.incoming_rx = incoming_rx;
     // Auto-join relay room.
     app.start_relay_join(code);
 
@@ -1140,7 +1170,10 @@ pub fn run_viewer_with_code(camera: CameraCapture, code: &str) -> Result<()> {
 }
 
 /// Run the local webcam viewer TUI.
-pub fn run_viewer(camera: CameraCapture) -> Result<()> {
+pub fn run_viewer(
+    camera: CameraCapture,
+    incoming_rx: Option<std::sync::mpsc::Receiver<crate::net::presence::IncomingCall>>,
+) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
@@ -1150,6 +1183,7 @@ pub fn run_viewer(camera: CameraCapture) -> Result<()> {
     let mut app = App::new();
     app.user_config = crate::config::load();
     app.user_config.apply_to(&mut app.config);
+    app.incoming_rx = incoming_rx;
 
     let result = run_main_loop(&mut app, camera, &mut terminal);
 
@@ -1188,6 +1222,14 @@ fn run_main_loop(
 
         // Check relay status.
         app.check_relay();
+
+        // Check for incoming calls from presence thread.
+        if app.pending_call.is_none() {
+            let call = app.incoming_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+            if let Some(call) = call {
+                app.pending_call = Some(call);
+            }
+        }
 
         // Check remote peer status updates.
         if let Some(ref rx) = app.remote_status_rx {
@@ -1414,6 +1456,7 @@ fn run_main_loop(
         let camera_hidden = app.camera_hidden;
         let audio_level_local = app.audio_level_local;
         let _audio_level_remote = app.audio_level_remote;
+        let pending_call_caller = app.pending_call.as_ref().map(|c| c.caller.clone());
 
         terminal.draw(|f| {
             let area = f.area();
@@ -1602,6 +1645,11 @@ fn run_main_loop(
             // Flash overlay.
             if let Some(ref flash_text) = flash {
                 render_flash_overlay(f, video_area, flash_text);
+            }
+
+            // Incoming call popup.
+            if let Some(ref caller) = pending_call_caller {
+                render_incoming_call_popup(f, video_area, caller);
             }
 
             // Audio level bar (call mode only) — local mic only.
@@ -2067,4 +2115,39 @@ fn open_plus_page() {
 
 /// Relay server address.
 const RELAY_ADDR: &str = "caboose.proxy.rlwy.net:28007";
+
+/// Render an incoming call popup overlay.
+fn render_incoming_call_popup(f: &mut ratatui::Frame, view_area: Rect, caller: &str) {
+    let popup_w: u16 = 31;
+    let popup_h: u16 = 6;
+    let x = view_area.x + (view_area.width.saturating_sub(popup_w)) / 2;
+    let y = view_area.y + (view_area.height.saturating_sub(popup_h)) / 2;
+    let popup_rect = Rect::new(x, y, popup_w, popup_h);
+
+    f.render_widget(Clear, popup_rect);
+
+    let content = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  Incoming call from  "),
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            format!("       @{}        ", caller),
+            Style::default().fg(Color::Cyan).add_modifier(ratatui::style::Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  [a] Accept   [d] Decline  ",
+            Style::default().fg(Color::Green),
+        )),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(Color::Yellow)),
+    );
+    f.render_widget(content, popup_rect);
+}
 

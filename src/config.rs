@@ -33,6 +33,12 @@ pub struct UserConfig {
     /// Unix timestamp of last successful license validation.
     #[serde(default)]
     pub license_validated_at: Option<u64>,
+    /// Registered username (txxxt+).
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Session token for authenticated relay commands.
+    #[serde(default)]
+    pub session_token: Option<String>,
 }
 
 fn default_false() -> bool {
@@ -63,6 +69,8 @@ impl Default for UserConfig {
             save_dir: None,
             license_key: None,
             license_validated_at: None,
+            username: None,
+            session_token: None,
         }
     }
 }
@@ -108,6 +116,8 @@ impl UserConfig {
             save_dir: prev.save_dir.clone(),
             license_key: prev.license_key.clone(),
             license_validated_at: prev.license_validated_at,
+            username: prev.username.clone(),
+            session_token: prev.session_token.clone(),
         }
     }
 
@@ -140,6 +150,23 @@ pub fn save_license_key(key: &str) {
     config.license_key = Some(key.to_string());
     config.license_validated_at = Some(now_unix());
     save(&config);
+}
+
+/// Save username and session token to config (after successful LOGIN).
+pub fn save_account(username: &str, token: &str) {
+    let mut config = load();
+    config.username = Some(username.to_string());
+    config.session_token = Some(token.to_string());
+    save(&config);
+}
+
+/// Get saved account (username, token). Returns None if not logged in.
+pub fn get_account() -> Option<(String, String)> {
+    let config = load();
+    match (config.username, config.session_token) {
+        (Some(u), Some(t)) => Some((u, t)),
+        _ => None,
+    }
 }
 
 /// Remove license key from config (invalid key).

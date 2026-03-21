@@ -31,7 +31,7 @@ client = [
     "dep:ort",
     "dep:ndarray",
 ]
-relay = []
+relay = ["dep:sqlx", "dep:tokio", "dep:uuid"]
 
 [dependencies]
 # Shared
@@ -63,3 +63,8 @@ dirs = { version = "5", optional = true }
 # ONNX person segmentation (client only)
 ort = { version = "2.0.0-rc.12", optional = true }
 ndarray = { version = "0.17", optional = true }
+
+# Relay server (relay only)
+sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "postgres", "macros"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }

@@ -9,6 +9,8 @@ mod render;
 mod segmentation;
 mod tui;
 
+use std::io::BufRead;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -36,6 +38,28 @@ enum Commands {
         /// License key from txxxt.me/plus
         key: String,
     },
+    /// Register a username (txxxt+ only)
+    Register {
+        /// Desired username (3-20 alphanumeric chars)
+        username: String,
+    },
+    /// Log in and save session token
+    Login,
+    /// Manage friends
+    Friends {
+        #[command(subcommand)]
+        action: FriendsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum FriendsAction {
+    /// Add a friend by username
+    Add { username: String },
+    /// Remove a friend by username
+    Remove { username: String },
+    /// List all friends
+    List,
 }
 
 fn main() -> Result<()> {
@@ -51,6 +75,15 @@ fn main() -> Result<()> {
         }
         Some(Commands::Activate { key }) => {
             return activate_plus(key);
+        }
+        Some(Commands::Register { username }) => {
+            return cmd_register(username);
+        }
+        Some(Commands::Login) => {
+            return cmd_login();
+        }
+        Some(Commands::Friends { action }) => {
+            return cmd_friends(action);
         }
         _ => {}
     }
@@ -70,6 +103,10 @@ fn main() -> Result<()> {
         camera::CameraCapture::new(640, 480)?
     };
 
+    // Start presence listener if logged in.
+    let incoming_rx = config::get_account()
+        .map(|(_, token)| net::presence::start_presence(&token));
+
     match cli.command {
         None if cli.code.is_some() => {
             // Check for updates before joining a call.
@@ -77,15 +114,22 @@ fn main() -> Result<()> {
                 eprintln!("update available: v{} → v{}", env!("CARGO_PKG_VERSION"), latest);
                 eprintln!("run 'txxxt update' to upgrade.\n");
             }
-            // Join relay room directly: txxxt AXBK
             let code = cli.code.unwrap();
-            tui::run_viewer_with_code(camera, &code)?;
+            // Direct call: txxxt @username
+            if let Some(target) = code.strip_prefix('@') {
+                let account = config::get_account()
+                    .ok_or_else(|| anyhow::anyhow!("not logged in. run: txxxt login"))?;
+                let (_username, token) = account;
+                tui::run_viewer_with_code(camera, &direct_call(&token, target)?, incoming_rx)?;
+            } else {
+                tui::run_viewer_with_code(camera, &code, incoming_rx)?;
+            }
         }
         None => {
             // Default: local ASCII webcam viewer (can start calls from TUI).
-            tui::run_viewer(camera)?;
+            tui::run_viewer(camera, incoming_rx)?;
         }
-        _ => unreachable!(), // Update/Activate handled above.
+        _ => unreachable!(), // All commands handled above.
     }
 
     Ok(())
@@ -233,3 +277,174 @@ fn self_update() -> Result<()> {
 
     Ok(())
 }
+
+/// Register a username with the relay server.
+fn cmd_register(username: &str) -> Result<()> {
+    use std::io::Write;
+    use std::net::TcpStream;
+
+    let key = config::load()
+        .license_key
+        .ok_or_else(|| anyhow::anyhow!("no license key found. run: txxxt activate <KEY>"))?;
+
+    println!("registering username @{}...", username);
+
+    let mut stream = TcpStream::connect(RELAY_ADDR)?;
+    write!(stream, "REGISTER {} {}\n", key, username)?;
+    stream.flush()?;
+
+    let mut reader = std::io::BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    let response = response.trim();
+
+    if response == "OK" {
+        println!("registered as @{}", username);
+        // Automatically log in.
+        println!("logging in...");
+        drop(reader);
+        cmd_login_with_key(&key)?;
+    } else {
+        anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(response));
+    }
+
+    Ok(())
+}
+
+/// Log in with the saved license key.
+fn cmd_login() -> Result<()> {
+    let key = config::load()
+        .license_key
+        .ok_or_else(|| anyhow::anyhow!("no license key found. run: txxxt activate <KEY>"))?;
+    cmd_login_with_key(&key)
+}
+
+fn cmd_login_with_key(key: &str) -> Result<()> {
+    use std::io::Write;
+    use std::net::TcpStream;
+
+    let mut stream = TcpStream::connect(RELAY_ADDR)?;
+    write!(stream, "LOGIN {}\n", key)?;
+    stream.flush()?;
+
+    let mut reader = std::io::BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    let response = response.trim().to_string();
+
+    if let Some(rest) = response.strip_prefix("SESSION ") {
+        let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+        if parts.len() == 2 {
+            let token = parts[0];
+            let username = parts[1];
+            config::save_account(username, token);
+            println!("logged in as @{}", username);
+        } else {
+            anyhow::bail!("unexpected server response: {}", response);
+        }
+    } else {
+        anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(&response));
+    }
+
+    Ok(())
+}
+
+/// Manage friends.
+fn cmd_friends(action: &FriendsAction) -> Result<()> {
+    use std::io::Write;
+    use std::net::TcpStream;
+
+    let (_, token) = config::get_account()
+        .ok_or_else(|| anyhow::anyhow!("not logged in. run: txxxt login"))?;
+
+    let mut stream = TcpStream::connect(RELAY_ADDR)?;
+
+    // Authenticate.
+    write!(stream, "AUTH {}\n", token)?;
+    stream.flush()?;
+    let mut reader = std::io::BufReader::new(stream.try_clone()?);
+    let mut auth_response = String::new();
+    reader.read_line(&mut auth_response)?;
+    let auth_response = auth_response.trim();
+    if !auth_response.starts_with("OK ") {
+        anyhow::bail!("authentication failed: {}", auth_response);
+    }
+
+    // Send friends command.
+    let cmd = match action {
+        FriendsAction::Add { username } => format!("FRIENDS ADD {}", username),
+        FriendsAction::Remove { username } => format!("FRIENDS REMOVE {}", username),
+        FriendsAction::List => "FRIENDS LIST".to_string(),
+    };
+    write!(stream, "{}\n", cmd)?;
+    stream.flush()?;
+
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    let response = response.trim();
+
+    match action {
+        FriendsAction::List => {
+            if response == "FRIENDS" {
+                println!("no friends yet");
+            } else if let Some(names) = response.strip_prefix("FRIENDS ") {
+                for name in names.split(',') {
+                    println!("@{}", name.trim());
+                }
+            } else {
+                anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(response));
+            }
+        }
+        FriendsAction::Add { username } => {
+            if response == "OK" {
+                println!("added @{}", username);
+            } else {
+                anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(response));
+            }
+        }
+        FriendsAction::Remove { username } => {
+            if response == "OK" {
+                println!("removed @{}", username);
+            } else {
+                anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(response));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Initiate a direct call to a username via relay. Returns the room code to join.
+fn direct_call(token: &str, target_username: &str) -> Result<String> {
+    use std::io::Write;
+    use std::net::TcpStream;
+
+    let mut stream = TcpStream::connect(RELAY_ADDR)?;
+
+    // Authenticate.
+    write!(stream, "AUTH {}\n", token)?;
+    stream.flush()?;
+    let mut reader = std::io::BufReader::new(stream.try_clone()?);
+    let mut auth_response = String::new();
+    reader.read_line(&mut auth_response)?;
+    let auth_response = auth_response.trim().to_string();
+    if !auth_response.starts_with("OK ") {
+        anyhow::bail!("authentication failed: {}", auth_response);
+    }
+
+    // Send CALL command.
+    write!(stream, "CALL {}\n", target_username)?;
+    stream.flush()?;
+
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    let response = response.trim();
+
+    if let Some(code) = response.strip_prefix("ROOM ") {
+        Ok(code.trim().to_string())
+    } else {
+        anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(response));
+    }
+}
+
+const RELAY_ADDR: &str = "caboose.proxy.rlwy.net:28007";
