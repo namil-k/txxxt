@@ -274,7 +274,10 @@ pub fn load() -> UserConfig {
         return UserConfig::default();
     };
     match fs::read_to_string(&path) {
-        Ok(content) => toml::from_str(&content).unwrap_or_default(),
+        Ok(content) => toml::from_str(&content).unwrap_or_else(|e| {
+            eprintln!("[config] parse error: {}", e);
+            UserConfig::default()
+        }),
         Err(_) => UserConfig::default(),
     }
 }
