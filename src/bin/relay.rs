@@ -82,10 +82,14 @@ fn main() {
 fn handle_client(mut stream: TcpStream, rooms: Rooms) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
 
-    // Read the command line (max 256 bytes to prevent memory exhaustion).
+    // Read the command line.
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
-    reader.by_ref().take(256).read_line(&mut line)?;
+    reader.read_line(&mut line)?;
+    if line.len() > 256 {
+        write!(stream, "ERR command too long\n")?;
+        return Ok(());
+    }
     let cmd = line.trim();
 
     if cmd == "CREATE" {

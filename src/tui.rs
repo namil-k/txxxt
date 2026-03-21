@@ -2075,5 +2075,5 @@ fn open_plus_page() {
 }
 
 /// Relay server address.
-const RELAY_ADDR: &str = "ballast.proxy.rlwy.net:32623";
+const RELAY_ADDR: &str = "caboose.proxy.rlwy.net:28007";
 
