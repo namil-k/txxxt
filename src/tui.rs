@@ -558,17 +558,20 @@ impl App {
         if let Some(ref rx) = self.relay_rx {
             if let Ok((kind, data)) = rx.try_recv() {
                 if kind == "CODE" {
-                    let url = format!("https://txxxt.me/{}", data);
+                    let msg = format!(
+                        "txxxt me ↓\ncode: {}\ntxxxt.me/{}",
+                        data, data
+                    );
                     let mut copied = false;
                     if let Ok(mut clip) = arboard::Clipboard::new() {
-                        if clip.set_text(&url).is_ok() {
+                        if clip.set_text(&msg).is_ok() {
                             copied = true;
                         }
                     }
                     if copied {
-                        self.flash(format!("txxxt.me/{} copied!", data));
+                        self.flash(format!("invite copied! code: {}", data));
                     } else {
-                        self.flash(format!("share: txxxt.me/{}", data));
+                        self.flash(format!("code: {} | txxxt.me/{}", data, data));
                     }
                     self.relay_code = Some(data);
                 } else if kind == "PAIRED" {
