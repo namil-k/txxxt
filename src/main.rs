@@ -46,6 +46,9 @@ fn main() -> Result<()> {
         check_version();
     }
 
+    // Re-validate txxxt+ license if needed (every 7 days).
+    config::revalidate_license();
+
     // Handle commands that don't need the camera first.
     match &cli.command {
         Some(Commands::Update) => {
@@ -162,7 +165,7 @@ fn activate_plus(key: &str) -> Result<()> {
             "-sSL", "--max-time", "10",
             "-X", "POST",
             "-H", "Content-Type: application/x-www-form-urlencoded",
-            "-d", &format!("license_key={}", key),
+            "-d", &format!("license_key={}", config::url_encode(key)),
             "https://api.lemonsqueezy.com/v1/licenses/validate",
         ])
         .output()?;

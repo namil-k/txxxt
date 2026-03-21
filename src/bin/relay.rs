@@ -9,10 +9,14 @@
 //!   bidirectionally until timeout or disconnect.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Maximum concurrent connections.
+const MAX_CONNECTIONS: usize = 200;
 
 /// Room code length (6 chars = ~900M combinations).
 const CODE_LEN: usize = 6;
@@ -35,6 +39,7 @@ fn main() {
     println!("relay server listening on {}", addr);
 
     let rooms: Rooms = Arc::new(Mutex::new(HashMap::new()));
+    let active_conns = Arc::new(AtomicUsize::new(0));
 
     // Periodic cleanup of stale rooms (>2 min waiting).
     let rooms_cleanup = rooms.clone();
@@ -53,11 +58,20 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
+                let current = active_conns.load(Ordering::Relaxed);
+                if current >= MAX_CONNECTIONS {
+                    eprintln!("connection limit reached ({}/{}), rejecting", current, MAX_CONNECTIONS);
+                    let _ = write!(&stream, "ERR server full\n");
+                    continue;
+                }
+                active_conns.fetch_add(1, Ordering::Relaxed);
                 let rooms = rooms.clone();
+                let conns = active_conns.clone();
                 std::thread::spawn(move || {
                     if let Err(e) = handle_client(stream, rooms) {
                         eprintln!("client error: {}", e);
                     }
+                    conns.fetch_sub(1, Ordering::Relaxed);
                 });
             }
             Err(e) => eprintln!("accept error: {}", e),
@@ -68,10 +82,10 @@ fn main() {
 fn handle_client(mut stream: TcpStream, rooms: Rooms) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
 
-    // Read the command line.
+    // Read the command line (max 256 bytes to prevent memory exhaustion).
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    reader.by_ref().take(256).read_line(&mut line)?;
     let cmd = line.trim();
 
     if cmd == "CREATE" {
@@ -253,25 +267,31 @@ fn pipe(
     }
 }
 
-/// Atomic counter for unique seeds.
-static CODE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Generate a random 4-character uppercase code.
+/// Generate a random room code using OS entropy.
 fn gen_code() -> String {
-    use std::time::SystemTime;
-    let counter = CODE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let seed = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
-        ^ (counter.wrapping_mul(2654435761)); // Knuth's multiplicative hash
-
     let chars = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I/O/0/1 to avoid confusion
     let mut code = String::with_capacity(CODE_LEN);
-    let mut s = seed;
-    for _ in 0..CODE_LEN {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        code.push(chars[(s >> 33) as usize % chars.len()] as char);
+    let mut bytes = [0u8; CODE_LEN];
+
+    // Read from OS random source.
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = std::io::Read::read_exact(&mut f, &mut bytes);
+    } else {
+        // Fallback: time-based (less secure but functional on all platforms).
+        use std::time::SystemTime;
+        let seed = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let mut s = seed;
+        for b in bytes.iter_mut() {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *b = (s >> 33) as u8;
+        }
+    }
+
+    for &b in &bytes {
+        code.push(chars[b as usize % chars.len()] as char);
     }
     code
 }

@@ -30,6 +30,9 @@ pub struct UserConfig {
     /// txxxt+ license key.
     #[serde(default)]
     pub license_key: Option<String>,
+    /// Unix timestamp of last successful license validation.
+    #[serde(default)]
+    pub license_validated_at: Option<u64>,
 }
 
 fn default_false() -> bool {
@@ -59,6 +62,7 @@ impl Default for UserConfig {
             style: "standard".into(),
             save_dir: None,
             license_key: None,
+            license_validated_at: None,
         }
     }
 }
@@ -103,6 +107,7 @@ impl UserConfig {
             style: style.label().to_string(),
             save_dir: prev.save_dir.clone(),
             license_key: prev.license_key.clone(),
+            license_validated_at: prev.license_validated_at,
         }
     }
 
@@ -123,16 +128,112 @@ impl UserConfig {
     }
 }
 
-/// Check if the user has txxxt+ activated (license key saved).
+/// Check if the user has txxxt+ activated (valid license key saved).
 pub fn is_plus() -> bool {
-    load().license_key.is_some()
+    let config = load();
+    config.license_key.is_some() && config.license_validated_at.is_some()
 }
 
-/// Save a license key to config.
+/// Save a license key to config with current timestamp.
 pub fn save_license_key(key: &str) {
     let mut config = load();
     config.license_key = Some(key.to_string());
+    config.license_validated_at = Some(now_unix());
     save(&config);
+}
+
+/// Remove license key from config (invalid key).
+pub fn revoke_license() {
+    let mut config = load();
+    config.license_key = None;
+    config.license_validated_at = None;
+    save(&config);
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Re-validate license key if older than 7 days. Runs on startup.
+/// If invalid, revokes the key. If offline, trusts previous validation up to 30 days.
+pub fn revalidate_license() {
+    let config = load();
+    let Some(key) = &config.license_key else { return };
+    let Some(validated_at) = config.license_validated_at else {
+        // Key exists but was never validated — revoke it.
+        revoke_license();
+        return;
+    };
+
+    let now = now_unix();
+    let age_days = (now.saturating_sub(validated_at)) / 86400;
+
+    // Still fresh — no need to re-check.
+    if age_days < 7 {
+        return;
+    }
+
+    // Try to validate via API.
+    use std::process::Command;
+    let output = Command::new("curl")
+        .args([
+            "-sSL", "--max-time", "5",
+            "-X", "POST",
+            "-H", "Content-Type: application/x-www-form-urlencoded",
+            "-d", &format!("license_key={}", url_encode(key)),
+            "https://api.lemonsqueezy.com/v1/licenses/validate",
+        ])
+        .output();
+
+    match output {
+        Ok(o) => {
+            let body = String::from_utf8_lossy(&o.stdout);
+            if body.is_empty() {
+                // Offline — trust previous validation up to 30 days.
+                if age_days > 30 {
+                    eprintln!("txxxt+ license expired (offline too long). run: txxxt activate <KEY>");
+                    revoke_license();
+                }
+                return;
+            }
+            let valid = body.contains("\"valid\":true") || body.contains("\"valid\": true");
+            if valid {
+                // Refresh timestamp.
+                let mut config = load();
+                config.license_validated_at = Some(now);
+                save(&config);
+            } else {
+                eprintln!("txxxt+ license no longer valid.");
+                revoke_license();
+            }
+        }
+        Err(_) => {
+            // Offline — trust up to 30 days.
+            if age_days > 30 {
+                eprintln!("txxxt+ license expired (offline too long). run: txxxt activate <KEY>");
+                revoke_license();
+            }
+        }
+    }
+}
+
+/// Simple URL encoding for form data values.
+pub fn url_encode(s: &str) -> String {
+    let mut encoded = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(b as char);
+            }
+            _ => {
+                encoded.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    encoded
 }
 
 /// Config file path: ~/.config/txxxt/config.toml
@@ -152,12 +253,19 @@ pub fn load() -> UserConfig {
 }
 
 /// Save config to disk. Silently ignores errors.
+/// Sets restrictive file permissions (0600) to protect license key.
 pub fn save(config: &UserConfig) {
     let Some(path) = config_path() else { return };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
     if let Ok(content) = toml::to_string_pretty(config) {
-        let _ = fs::write(&path, content);
+        let _ = fs::write(&path, &content);
+        // Restrict file permissions (owner-only read/write).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        }
     }
 }

@@ -626,8 +626,7 @@ impl App {
         let style = VisualStyle::ALL[idx];
         if matches!(style, VisualStyle::Contour) {
             if !crate::config::is_plus() {
-                open_plus_page();
-self.flash("opening txxxt.me/plus...".into());
+                self.flash("txxxt+ feature — press [u] to upgrade".into());
                 return;
             }
             // Auto-enable person segmentation for contour mode.
@@ -719,8 +718,7 @@ self.flash("opening txxxt.me/plus...".into());
                                 } else if crate::config::is_plus() {
                                     self.config.bg_mode = BgMode::Person;
                                 } else {
-                                    open_plus_page();
-self.flash("opening txxxt.me/plus...".into());
+                                    self.flash("txxxt+ feature — press [u] to upgrade".into());
                                 }
                             }
                             SettingsItem::Mirror => {
@@ -926,6 +924,12 @@ self.flash("opening txxxt.me/plus...".into());
             }
             KeyCode::Char('y') => {
                 return Some(ExportAction::Save);
+            }
+            KeyCode::Char('u') => {
+                if !crate::config::is_plus() {
+                    open_plus_page();
+                    self.flash("opening txxxt.me/plus...".into());
+                }
             }
             // PIP controls (call mode only).
             KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -1205,8 +1209,7 @@ fn run_main_loop(
                 let elapsed = start.elapsed().as_secs();
                 let limit: u64 = 5 * 60;
                 if elapsed >= limit {
-                    open_plus_page();
-                    app.flash("5 min limit — opening txxxt.me/plus...".into());
+                    app.flash("5 min limit — press [u] to upgrade".into());
                     app.end_call();
                 } else if limit - elapsed == 60 {
                     app.flash("1 minute remaining".into());
