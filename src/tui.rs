@@ -79,7 +79,8 @@ const PIP_DEFAULT_SCALE_IDX: usize = 2; // 25%
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsItem {
     Color,
-    Background,
+    BgMotion,
+    BgAI,
     Mirror,
     Brightness,
 }
@@ -87,7 +88,8 @@ enum SettingsItem {
 impl SettingsItem {
     const ALL: &'static [SettingsItem] = &[
         SettingsItem::Color,
-        SettingsItem::Background,
+        SettingsItem::BgMotion,
+        SettingsItem::BgAI,
         SettingsItem::Mirror,
         SettingsItem::Brightness,
     ];
@@ -95,7 +97,8 @@ impl SettingsItem {
     fn label(self) -> &'static str {
         match self {
             SettingsItem::Color => "color",
-            SettingsItem::Background => "bg removal",
+            SettingsItem::BgMotion => "background (motion)",
+            SettingsItem::BgAI => "background (advanced)",
             SettingsItem::Mirror => "mirror",
             SettingsItem::Brightness => "bright threshold",
         }
@@ -124,6 +127,8 @@ impl PrefItem {
 pub enum VisualStyle {
     Charset(CharsetName),
     Outline,
+    /// Mask-based silhouette contour (pro feature).
+    Contour,
 }
 
 impl VisualStyle {
@@ -135,12 +140,14 @@ impl VisualStyle {
         VisualStyle::Charset(CharsetName::Digits),
         VisualStyle::Charset(CharsetName::Blocks),
         VisualStyle::Outline,
+        VisualStyle::Contour,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             VisualStyle::Charset(cs) => cs.label(),
-            VisualStyle::Outline => "outline",
+            VisualStyle::Outline => "lines",
+            VisualStyle::Contour => "contour",
         }
     }
 
@@ -154,15 +161,18 @@ impl VisualStyle {
             VisualStyle::Outline => {
                 config.mode = RenderMode::Outline;
             }
+            VisualStyle::Contour => {
+                config.mode = RenderMode::Contour;
+            }
         }
     }
 
     /// Determine current style from config.
     pub fn from_config(config: &RenderConfig) -> Self {
-        if config.mode == RenderMode::Outline {
-            VisualStyle::Outline
-        } else {
-            VisualStyle::Charset(config.charset)
+        match config.mode {
+            RenderMode::Outline => VisualStyle::Outline,
+            RenderMode::Contour => VisualStyle::Contour,
+            RenderMode::Normal => VisualStyle::Charset(config.charset),
         }
     }
 
@@ -610,6 +620,21 @@ impl App {
     }
 
     /// End the current call and return to local mode.
+    /// Apply a visual style, with pro-gating for Contour.
+    /// If Contour is selected, auto-enables Person bg_mode.
+    fn try_apply_style(&mut self, idx: usize) {
+        let style = VisualStyle::ALL[idx];
+        if matches!(style, VisualStyle::Contour) {
+            if !crate::segmentation::is_model_available() {
+                self.flash("pro feature — run: txxxt activate <KEY>".into());
+                return;
+            }
+            // Auto-enable person segmentation for contour mode.
+            self.config.bg_mode = crate::render::BgMode::Person;
+        }
+        style.apply(&mut self.config);
+    }
+
     fn end_call(&mut self) {
         self.mode = AppMode::Local;
         self.remote_rx = None;
@@ -645,13 +670,13 @@ impl App {
                 match key.code {
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.panel_cursor = self.panel_cursor.saturating_sub(1);
-                        VisualStyle::ALL[self.panel_cursor].apply(&mut self.config);
+                        self.try_apply_style(self.panel_cursor);
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
                         if self.panel_cursor + 1 < count {
                             self.panel_cursor += 1;
                         }
-                        VisualStyle::ALL[self.panel_cursor].apply(&mut self.config);
+                        self.try_apply_style(self.panel_cursor);
                     }
                     KeyCode::Enter | KeyCode::Esc | KeyCode::Char('v') | KeyCode::Char('q') => {
                         self.panel = None;
@@ -677,8 +702,24 @@ impl App {
                             SettingsItem::Color => {
                                 self.config.color = !self.config.color;
                             }
-                            SettingsItem::Background => {
-                                self.config.bg_removal = !self.config.bg_removal;
+                            SettingsItem::BgMotion => {
+                                use crate::render::BgMode;
+                                // Toggle: if currently Motion → Off, otherwise → Motion (turns off AI).
+                                self.config.bg_mode = if self.config.bg_mode == BgMode::Motion {
+                                    BgMode::Off
+                                } else {
+                                    BgMode::Motion
+                                };
+                            }
+                            SettingsItem::BgAI => {
+                                use crate::render::BgMode;
+                                if self.config.bg_mode == BgMode::Person {
+                                    self.config.bg_mode = BgMode::Off;
+                                } else if crate::segmentation::is_model_available() {
+                                    self.config.bg_mode = BgMode::Person;
+                                } else {
+                                    self.flash("pro feature — run: txxxt activate <KEY>".into());
+                                }
                             }
                             SettingsItem::Mirror => {
                                 self.config.mirror = !self.config.mirror;
@@ -1123,6 +1164,18 @@ fn run_main_loop(
     let mut frames_since_update = 0u32;
     let mut bg_model = BackgroundModel::new(640, 480, 0.05, 25.0);
 
+    // ONNX person segmenter (loaded lazily when Person mode is first activated).
+    let mut segmenter: Option<crate::segmentation::Segmenter> = None;
+    let mut last_person_mask: Option<Vec<bool>> = None;
+    let mut prev_raw_mask: Option<Vec<bool>> = None;
+
+    // Try to initialize segmenter if Person mode is already active.
+    if app.config.bg_mode == crate::render::BgMode::Person {
+        if let Some(path) = crate::segmentation::default_model_path() {
+            segmenter = crate::segmentation::Segmenter::new(&path).ok();
+        }
+    }
+
     while app.running {
         let frame_start = Instant::now();
 
@@ -1168,13 +1221,59 @@ fn run_main_loop(
         // Capture camera frame.
         let frame_data = camera.frame_rgb();
 
+        // Lazily init/teardown segmenter based on current BgMode.
+        match app.config.bg_mode {
+            crate::render::BgMode::Person if segmenter.is_none() => {
+                if let Some(path) = crate::segmentation::default_model_path() {
+                    match crate::segmentation::Segmenter::new(&path) {
+                        Ok(s) => { segmenter = Some(s); }
+                        Err(_) => {
+                            app.flash("model load failed — falling back to motion".into());
+                            app.config.bg_mode = crate::render::BgMode::Motion;
+                        }
+                    }
+                }
+            }
+            crate::render::BgMode::Person => {} // already running
+            _ => {
+                // Drop segmenter when not in Person mode.
+                if segmenter.is_some() {
+                    segmenter = None;
+                    last_person_mask = None;
+                    prev_raw_mask = None;
+                }
+            }
+        }
+
         let fg_mask_buf: Option<Vec<bool>> = if let Ok((rgb, w, h)) = &frame_data {
-            bg_model.reset_if_size_changed(*w, *h);
-            bg_model.update(rgb);
-            if app.config.bg_removal {
-                Some(bg_model.foreground_mask(rgb))
-            } else {
-                None
+            match app.config.bg_mode {
+                crate::render::BgMode::Off => None,
+                crate::render::BgMode::Motion => {
+                    bg_model.reset_if_size_changed(*w, *h);
+                    bg_model.update(rgb);
+                    Some(bg_model.foreground_mask(rgb))
+                }
+                crate::render::BgMode::Person => {
+                    // Send frame to ONNX thread.
+                    if let Some(ref seg) = segmenter {
+                        seg.send_frame(rgb, *w, *h);
+                        // Poll for new mask + temporal smoothing.
+                        if let Some(new_mask) = seg.try_recv_mask() {
+                            last_person_mask = Some(match (&last_person_mask, &prev_raw_mask) {
+                                (Some(stable), Some(prev_raw)) if stable.len() == new_mask.len() && prev_raw.len() == new_mask.len() => {
+                                    // Change only if both previous raw AND current raw agree (2-frame consensus).
+                                    stable.iter().zip(prev_raw.iter()).zip(new_mask.iter())
+                                        .map(|((&s, &pr), &n)| {
+                                            if pr == n { n } else { s }
+                                        }).collect()
+                                }
+                                _ => new_mask.clone(),
+                            });
+                            prev_raw_mask = Some(new_mask);
+                        }
+                    }
+                    last_person_mask.clone()
+                }
             }
         } else {
             None
@@ -1282,7 +1381,7 @@ fn run_main_loop(
         let flash = app.active_flash().map(|s| s.to_string());
         let fps = app.fps;
         let color_on = app.config.color;
-        let bg_on = app.config.bg_removal;
+        let bg_mode = app.config.bg_mode;
         let brightness = app.config.brightness_threshold;
         let ascii_ref = &ascii_grid;
         let remote_ref = &app.remote_grid;
@@ -1363,7 +1462,7 @@ fn run_main_loop(
 
                     // Overlay panels on full video area.
                     render_panels(f, video_area, open_panel, panel_cursor, current_style,
-                        color_on, bg_on, app.config.mirror, brightness,
+                        color_on, bg_mode, app.config.mirror, brightness,
                         pref_editing, &pref_input, pref_save_dir.as_deref(),
                         &pref_dir_entries, pref_dir_cursor, &connect_input);
                 }
@@ -1483,7 +1582,7 @@ fn run_main_loop(
 
                     // Overlay panels on full video area.
                     render_panels(f, video_area, open_panel, panel_cursor, current_style,
-                        color_on, bg_on, app.config.mirror, brightness,
+                        color_on, bg_mode, app.config.mirror, brightness,
                         pref_editing, &pref_input, pref_save_dir.as_deref(),
                         &pref_dir_entries, pref_dir_cursor, &connect_input);
                 }
@@ -1524,7 +1623,11 @@ fn run_main_loop(
             // Status bar.
             let style_label = current_style.label();
             let color_label = if color_on { "COLOR" } else { "MONO" };
-            let bg_label = if bg_on { " BG" } else { "" };
+            let bg_label = match bg_mode {
+                crate::render::BgMode::Off => "",
+                crate::render::BgMode::Motion => " BG:motion",
+                crate::render::BgMode::Person => " BG:adv",
+            };
             let mode_info = match &app_mode {
                 AppMode::Local => "[c]onnect [r]oom".to_string(),
                 AppMode::RelayWaiting => {
@@ -1631,7 +1734,7 @@ fn render_panels(
     panel_cursor: usize,
     current_style: VisualStyle,
     color_on: bool,
-    bg_on: bool,
+    bg_mode: crate::render::BgMode,
     mirror_on: bool,
     brightness: u8,
     pref_editing: bool,
@@ -1646,7 +1749,7 @@ fn render_panels(
             render_style_picker(f, area, panel_cursor, current_style);
         }
         Some(Panel::Settings) => {
-            render_settings_panel(f, area, panel_cursor, color_on, bg_on, mirror_on, brightness);
+            render_settings_panel(f, area, panel_cursor, color_on, bg_mode, mirror_on, brightness);
         }
         Some(Panel::Preference) => {
             render_preference_panel(f, area, panel_cursor, pref_editing, pref_input, pref_save_dir, pref_dir_entries, pref_dir_cursor);
@@ -1670,14 +1773,18 @@ fn render_style_picker(f: &mut ratatui::Frame, view_area: Rect, cursor: usize, c
     // Clear the area behind the panel.
     f.render_widget(Clear, panel_rect);
 
+    let model_available = crate::segmentation::is_model_available();
     let items: Vec<Line<'static>> = VisualStyle::ALL
         .iter()
         .enumerate()
         .map(|(i, &vs)| {
             let marker = if vs == current { "● " } else { "  " };
             let label = format!("{}{}", marker, vs.label());
+            let is_locked = matches!(vs, VisualStyle::Contour) && !model_available;
             let style = if i == cursor {
                 Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
+            } else if is_locked {
+                Style::default().fg(Color::DarkGray)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -1690,7 +1797,6 @@ fn render_style_picker(f: &mut ratatui::Frame, view_area: Rect, cursor: usize, c
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title(" style ")
-            .style(Style::default().bg(Color::DarkGray)),
     );
     f.render_widget(picker, panel_rect);
 }
@@ -1701,25 +1807,38 @@ fn render_settings_panel(
     view_area: Rect,
     cursor: usize,
     color_on: bool,
-    bg_on: bool,
+    bg_mode: crate::render::BgMode,
     mirror_on: bool,
     brightness: u8,
 ) {
+    let model_available = crate::segmentation::is_model_available();
+
     // Build row strings first, then derive panel width from content.
-    let rows: Vec<String> = SettingsItem::ALL
+    let rows: Vec<(String, bool)> = SettingsItem::ALL
         .iter()
         .map(|&item| {
-            let value: String = match item {
-                SettingsItem::Color => if color_on { "ON".into() } else { "OFF".into() },
-                SettingsItem::Background => if bg_on { "ON".into() } else { "OFF".into() },
-                SettingsItem::Mirror => if mirror_on { "ON".into() } else { "OFF".into() },
-                SettingsItem::Brightness => format!("◀ {} ▶", brightness),
+            let (value, dimmed) = match item {
+                SettingsItem::Color => (if color_on { "ON".into() } else { "OFF".into() }, false),
+                SettingsItem::BgMotion => {
+                    let on = bg_mode == crate::render::BgMode::Motion;
+                    (if on { "ON".into() } else { "OFF".into() }, false)
+                }
+                SettingsItem::BgAI => {
+                    let on = bg_mode == crate::render::BgMode::Person;
+                    let dimmed = !on && !model_available;
+                    (if on { "ON".into() } else { "OFF".into() }, dimmed)
+                }
+                SettingsItem::Mirror => (if mirror_on { "ON".into() } else { "OFF".into() }, false),
+                SettingsItem::Brightness => (format!("◀ {} ▶", brightness), false),
             };
-            format!(" {}  {} ", item.label(), value)
+            (format!(" {}  {} ", item.label(), value), dimmed)
         })
         .collect();
 
-    let max_row_len = rows.iter().map(|r| r.len()).max().unwrap_or(10);
+    // Add Person (pro) row if not already in Person mode.
+    // We show it as a separate hint below the cycling value.
+
+    let max_row_len = rows.iter().map(|(r, _)| r.len()).max().unwrap_or(10);
     // +2 for border left/right, min 14 to fit " settings " title
     let panel_w = (max_row_len as u16 + 2).max(14);
     let panel_h = SettingsItem::ALL.len() as u16 + 2;
@@ -1733,11 +1852,14 @@ fn render_settings_panel(
     let items: Vec<Line<'static>> = rows
         .into_iter()
         .enumerate()
-        .map(|(i, row)| {
+        .map(|(i, (row, dimmed))| {
             // Pad to fill inner width
             let padded = format!("{:<width$}", row, width = inner_w);
+
             let style = if i == cursor {
                 Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
+            } else if dimmed {
+                Style::default().fg(Color::DarkGray)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -1749,8 +1871,7 @@ fn render_settings_panel(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title(" settings ")
-            .style(Style::default().bg(Color::DarkGray)),
+            .title(" settings "),
     );
     f.render_widget(panel, panel_rect);
 }
@@ -1848,8 +1969,7 @@ fn render_preference_panel(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title(title)
-            .style(Style::default().bg(Color::DarkGray)),
+            .title(title),
     );
     f.render_widget(panel, panel_rect);
 }
@@ -1875,8 +1995,7 @@ fn render_connect_panel(f: &mut ratatui::Frame, view_area: Rect, input: &str) {
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title(" connect ")
-            .style(Style::default().bg(Color::DarkGray)),
+            .title(" connect "),
     );
     f.render_widget(panel, panel_rect);
 }
@@ -1900,8 +2019,7 @@ fn render_flash_overlay(f: &mut ratatui::Frame, view_area: Rect, message: &str) 
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .style(Style::default().bg(Color::DarkGray)),
+            .border_type(BorderType::Rounded),
     );
     f.render_widget(content, panel_rect);
 }

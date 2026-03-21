@@ -5,6 +5,19 @@ use crate::charsets::{CharsetName, EDGE_CHARS};
 pub enum RenderMode {
     Normal,
     Outline,
+    /// Mask-based silhouette contour (pro feature, requires person segmentation).
+    Contour,
+}
+
+/// Background removal mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BgMode {
+    /// No background removal.
+    Off,
+    /// Motion-based foreground detection (EMA).
+    Motion,
+    /// ONNX person segmentation (pro feature).
+    Person,
 }
 
 /// Render configuration.
@@ -13,8 +26,8 @@ pub struct RenderConfig {
     pub charset: CharsetName,
     pub color: bool,
     pub brightness_threshold: u8,
-    /// Whether background removal is active (independent of mode).
-    pub bg_removal: bool,
+    /// Background removal mode.
+    pub bg_mode: BgMode,
     /// Horizontal mirror (default true — selfie/mirror view).
     pub mirror: bool,
 }
@@ -26,7 +39,7 @@ impl Default for RenderConfig {
             charset: CharsetName::Standard,
             color: false,
             brightness_threshold: 10,
-            bg_removal: false,
+            bg_mode: BgMode::Off,
             mirror: true,
         }
     }
@@ -57,6 +70,11 @@ pub fn render_frame(
     let rows = rows as u32;
     if cols == 0 || rows == 0 || img_width == 0 || img_height == 0 {
         return vec![];
+    }
+
+    // Contour mode: mask-based silhouette outline.
+    if config.mode == RenderMode::Contour {
+        return render_contour(rgb, img_width, img_height, cols, rows, config, fg_mask);
     }
 
     // Each terminal cell is roughly 2x taller than wide, so we sample accordingly.
@@ -114,6 +132,7 @@ pub fn render_frame(
                     RenderMode::Outline => {
                         edge_char(&gray, img_width, img_height, px, py, config.brightness_threshold)
                     }
+                    RenderMode::Contour => unreachable!(),
                 }
             };
 
@@ -217,6 +236,133 @@ fn normalize_color_brightness(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
 /// Rec. 709 luminance.
 fn luminance(r: u8, g: u8, b: u8) -> u8 {
     (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) as u8
+}
+
+/// Render contour mode: clean silhouette outline from the person mask.
+///
+/// Downsamples the per-pixel fg_mask to a per-cell boolean grid, then draws
+/// box-drawing characters at boundary cells (foreground cell adjacent to
+/// background cell).
+fn render_contour(
+    rgb: &[u8],
+    img_width: u32,
+    img_height: u32,
+    cols: u32,
+    rows: u32,
+    config: &RenderConfig,
+    fg_mask: Option<&[bool]>,
+) -> Vec<Vec<AsciiCell>> {
+    let cell_w = img_width as f32 / cols as f32;
+    let cell_h = img_height as f32 / rows as f32;
+
+    // Build per-cell mask: a cell is "foreground" if >50% of sampled pixels are fg.
+    let cell_mask: Vec<Vec<bool>> = (0..rows)
+        .map(|row| {
+            (0..cols)
+                .map(|col| {
+                    let src_col = if config.mirror { cols - 1 - col } else { col };
+                    let px = ((src_col as f32 + 0.5) * cell_w) as u32;
+                    let py = ((row as f32 + 0.5) * cell_h) as u32;
+                    let px = px.min(img_width - 1);
+                    let py = py.min(img_height - 1);
+                    match fg_mask {
+                        Some(mask) => {
+                            let idx = (py * img_width + px) as usize;
+                            mask.get(idx).copied().unwrap_or(false)
+                        }
+                        None => false,
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    // Helper to check if cell (r, c) is foreground.
+    let is_fg = |r: i32, c: i32| -> bool {
+        if r < 0 || c < 0 || r >= rows as i32 || c >= cols as i32 {
+            return false;
+        }
+        cell_mask[r as usize][c as usize]
+    };
+
+    let mut result = Vec::with_capacity(rows as usize);
+
+    for row in 0..rows {
+        let mut line = Vec::with_capacity(cols as usize);
+        for col in 0..cols {
+            let r = row as i32;
+            let c = col as i32;
+            let here = is_fg(r, c);
+
+            // Contour: only draw at boundary cells.
+            let ch = if here {
+                let up = is_fg(r - 1, c);
+                let down = is_fg(r + 1, c);
+                let left = is_fg(r, c - 1);
+                let right = is_fg(r, c + 1);
+
+                // Interior cell (all neighbors are fg) → space.
+                if up && down && left && right {
+                    ' '
+                } else {
+                    // Pick box-drawing character based on which sides are exposed.
+                    contour_char(up, down, left, right)
+                }
+            } else {
+                ' '
+            };
+
+            let color = if config.color && ch != ' ' {
+                // Sample color from the original image at this cell.
+                let src_col = if config.mirror { cols - 1 - col } else { col };
+                let x0 = ((src_col as f32) * cell_w) as u32;
+                let y0 = ((row as f32) * cell_h) as u32;
+                let x1 = (((src_col + 1) as f32) * cell_w).min(img_width as f32) as u32;
+                let y1 = (((row + 1) as f32) * cell_h).min(img_height as f32) as u32;
+                let (cr, cg, cb) = rms_sample(rgb, img_width, x0, y0, x1, y1);
+                Some(normalize_color_brightness(cr, cg, cb))
+            } else {
+                None
+            };
+
+            line.push(AsciiCell { ch, color });
+        }
+        result.push(line);
+    }
+
+    result
+}
+
+/// Pick a box-drawing character for a contour boundary cell.
+/// Arguments indicate whether each neighbor is also foreground.
+fn contour_char(up: bool, down: bool, left: bool, right: bool) -> char {
+    match (up, down, left, right) {
+        // Exposed on one side only.
+        (false, true, true, true) => '─',   // top edge
+        (true, false, true, true) => '─',   // bottom edge
+        (true, true, false, true) => '│',   // left edge
+        (true, true, true, false) => '│',   // right edge
+
+        // Corners: two sides exposed.
+        (false, true, false, true) => '╭',  // top-left corner
+        (false, true, true, false) => '╮',  // top-right corner
+        (true, false, false, true) => '╰',  // bottom-left corner
+        (true, false, true, false) => '╯',  // bottom-right corner
+
+        // Horizontal / vertical edges with two sides exposed.
+        (false, false, true, true) => '─',  // thin horizontal (top+bottom exposed)
+        (true, true, false, false) => '│',  // thin vertical (left+right exposed)
+
+        // T-junctions: three sides exposed.
+        (false, false, false, true) => '╭',
+        (false, false, true, false) => '╮',
+        (false, true, false, false) => '│',
+        (true, false, false, false) => '│',
+
+        // Isolated point or all sides exposed.
+        (false, false, false, false) => '•',
+        (true, true, true, true) => ' ',    // interior (shouldn't reach here)
+    }
 }
 
 /// Convert RGB buffer to grayscale.

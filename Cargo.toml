@@ -28,6 +28,8 @@ client = [
     "dep:serde",
     "dep:toml",
     "dep:dirs",
+    "dep:ort",
+    "dep:ndarray",
 ]
 relay = []
 
@@ -57,3 +59,7 @@ webrtc-audio-processing = { version = "2", features = ["bundled"], optional = tr
 serde = { version = "1", features = ["derive"], optional = true }
 toml = { version = "0.8", optional = true }
 dirs = { version = "5", optional = true }
+
+# ONNX person segmentation (client only)
+ort = { version = "2.0.0-rc.12", optional = true }
+ndarray = { version = "0.17", optional = true }

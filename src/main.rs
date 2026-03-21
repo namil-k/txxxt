@@ -6,6 +6,7 @@ mod config;
 mod export;
 mod net;
 mod render;
+mod segmentation;
 mod tui;
 
 use anyhow::Result;

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::charsets::CharsetName;
-use crate::render::RenderConfig;
+use crate::render::{BgMode, RenderConfig};
 use crate::tui::VisualStyle;
 
 /// Persisted user settings.
@@ -12,8 +12,12 @@ use crate::tui::VisualStyle;
 pub struct UserConfig {
     #[serde(default = "default_false")]
     pub color: bool,
-    #[serde(default = "default_false")]
-    pub bg_removal: bool,
+    /// Background mode: "off", "motion", or "person".
+    #[serde(default = "default_bg_mode")]
+    pub bg_mode: String,
+    /// Legacy field — migrated to bg_mode on load.
+    #[serde(default)]
+    pub bg_removal: Option<bool>,
     #[serde(default = "default_true")]
     pub mirror: bool,
     #[serde(default = "default_brightness_threshold")]
@@ -37,12 +41,16 @@ fn default_brightness_threshold() -> u8 {
 fn default_style() -> String {
     "standard".into()
 }
+fn default_bg_mode() -> String {
+    "off".into()
+}
 
 impl Default for UserConfig {
     fn default() -> Self {
         Self {
             color: false,
-            bg_removal: false,
+            bg_mode: "off".into(),
+            bg_removal: None,
             mirror: true,
             brightness_threshold: 10,
             style: "standard".into(),
@@ -51,13 +59,41 @@ impl Default for UserConfig {
     }
 }
 
+fn bg_mode_from_str(s: &str) -> BgMode {
+    match s {
+        "motion" => BgMode::Motion,
+        "person" => BgMode::Person,
+        _ => BgMode::Off,
+    }
+}
+
+fn bg_mode_to_str(mode: BgMode) -> &'static str {
+    match mode {
+        BgMode::Off => "off",
+        BgMode::Motion => "motion",
+        BgMode::Person => "person",
+    }
+}
+
 impl UserConfig {
+    /// Resolve the effective BgMode, handling legacy migration.
+    pub fn effective_bg_mode(&self) -> BgMode {
+        // Migrate legacy bg_removal field.
+        if let Some(true) = self.bg_removal {
+            if self.bg_mode == "off" {
+                return BgMode::Motion;
+            }
+        }
+        bg_mode_from_str(&self.bg_mode)
+    }
+
     /// Build a UserConfig from the current RenderConfig state and existing preferences.
     pub fn from_render_config(config: &RenderConfig, prev: &UserConfig) -> Self {
         let style = VisualStyle::from_config(config);
         Self {
             color: config.color,
-            bg_removal: config.bg_removal,
+            bg_mode: bg_mode_to_str(config.bg_mode).to_string(),
+            bg_removal: None, // Don't save legacy field.
             mirror: config.mirror,
             brightness_threshold: config.brightness_threshold,
             style: style.label().to_string(),
@@ -68,7 +104,7 @@ impl UserConfig {
     /// Apply this UserConfig to a RenderConfig.
     pub fn apply_to(&self, config: &mut RenderConfig) {
         config.color = self.color;
-        config.bg_removal = self.bg_removal;
+        config.bg_mode = self.effective_bg_mode();
         config.mirror = self.mirror;
         config.brightness_threshold = self.brightness_threshold;
 
