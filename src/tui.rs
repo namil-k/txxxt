@@ -1197,17 +1197,19 @@ fn run_main_loop(
             }
         }
 
-        // 5-minute countdown warning.
-        if let Some(start) = app.call_start {
-            let elapsed = start.elapsed().as_secs();
-            let limit: u64 = 5 * 60;
-            if elapsed >= limit {
-                app.flash("5 min limit reached".into());
-                app.end_call();
-            } else if limit - elapsed == 60 {
-                app.flash("1 minute remaining".into());
-            } else if limit - elapsed == 30 {
-                app.flash("30 seconds remaining".into());
+        // 5-minute call limit (txxxt+ users: unlimited).
+        if !crate::segmentation::is_model_available() {
+            if let Some(start) = app.call_start {
+                let elapsed = start.elapsed().as_secs();
+                let limit: u64 = 5 * 60;
+                if elapsed >= limit {
+                    app.flash("5 min limit — upgrade at txxxt.me/plus".into());
+                    app.end_call();
+                } else if limit - elapsed == 60 {
+                    app.flash("1 minute remaining".into());
+                } else if limit - elapsed == 30 {
+                    app.flash("30 seconds remaining".into());
+                }
             }
         }
 
