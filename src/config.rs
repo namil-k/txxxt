@@ -27,6 +27,9 @@ pub struct UserConfig {
     /// Custom save directory. None = ~/Downloads.
     #[serde(default)]
     pub save_dir: Option<String>,
+    /// txxxt+ license key.
+    #[serde(default)]
+    pub license_key: Option<String>,
 }
 
 fn default_false() -> bool {
@@ -55,6 +58,7 @@ impl Default for UserConfig {
             brightness_threshold: 10,
             style: "standard".into(),
             save_dir: None,
+            license_key: None,
         }
     }
 }
@@ -98,6 +102,7 @@ impl UserConfig {
             brightness_threshold: config.brightness_threshold,
             style: style.label().to_string(),
             save_dir: prev.save_dir.clone(),
+            license_key: prev.license_key.clone(),
         }
     }
 
@@ -116,6 +121,18 @@ impl UserConfig {
             .unwrap_or(VisualStyle::Charset(CharsetName::Standard));
         style.apply(config);
     }
+}
+
+/// Check if the user has txxxt+ activated (license key saved).
+pub fn is_plus() -> bool {
+    load().license_key.is_some()
+}
+
+/// Save a license key to config.
+pub fn save_license_key(key: &str) {
+    let mut config = load();
+    config.license_key = Some(key.to_string());
+    save(&config);
 }
 
 /// Config file path: ~/.config/txxxt/config.toml

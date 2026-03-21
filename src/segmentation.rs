@@ -245,7 +245,3 @@ pub fn default_model_path() -> Option<std::path::PathBuf> {
     dirs::cache_dir().map(|d| d.join("txxxt").join("models").join("selfie_segmentation.onnx"))
 }
 
-/// Check if the person segmentation model is available on disk.
-pub fn is_model_available() -> bool {
-    default_model_path().map(|p| p.exists()).unwrap_or(false)
-}

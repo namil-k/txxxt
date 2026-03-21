@@ -188,6 +188,9 @@ fn activate_plus(key: &str) -> Result<()> {
 
     println!("license valid ✓");
 
+    // Save license key to config.
+    config::save_license_key(key);
+
     // 2. Check if model is already downloaded.
     let model_path = segmentation::default_model_path()
         .ok_or_else(|| anyhow::anyhow!("could not determine cache directory"))?;

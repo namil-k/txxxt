@@ -625,7 +625,7 @@ impl App {
     fn try_apply_style(&mut self, idx: usize) {
         let style = VisualStyle::ALL[idx];
         if matches!(style, VisualStyle::Contour) {
-            if !crate::segmentation::is_model_available() {
+            if !crate::config::is_plus() {
                 open_plus_page();
 self.flash("opening txxxt.me/plus...".into());
                 return;
@@ -716,7 +716,7 @@ self.flash("opening txxxt.me/plus...".into());
                                 use crate::render::BgMode;
                                 if self.config.bg_mode == BgMode::Person {
                                     self.config.bg_mode = BgMode::Off;
-                                } else if crate::segmentation::is_model_available() {
+                                } else if crate::config::is_plus() {
                                     self.config.bg_mode = BgMode::Person;
                                 } else {
                                     open_plus_page();
@@ -1200,7 +1200,7 @@ fn run_main_loop(
         }
 
         // 5-minute call limit (txxxt+ users: unlimited).
-        if !crate::segmentation::is_model_available() {
+        if !crate::config::is_plus() {
             if let Some(start) = app.call_start {
                 let elapsed = start.elapsed().as_secs();
                 let limit: u64 = 5 * 60;
@@ -1778,7 +1778,7 @@ fn render_style_picker(f: &mut ratatui::Frame, view_area: Rect, cursor: usize, c
     // Clear the area behind the panel.
     f.render_widget(Clear, panel_rect);
 
-    let model_available = crate::segmentation::is_model_available();
+    let model_available = crate::config::is_plus();
     let items: Vec<Line<'static>> = VisualStyle::ALL
         .iter()
         .enumerate()
@@ -1816,7 +1816,7 @@ fn render_settings_panel(
     mirror_on: bool,
     brightness: u8,
 ) {
-    let model_available = crate::segmentation::is_model_available();
+    let model_available = crate::config::is_plus();
 
     // Build row strings first, then derive panel width from content.
     let rows: Vec<(String, bool)> = SettingsItem::ALL
