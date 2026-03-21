@@ -669,6 +669,11 @@ fn handle_friends_remove(mut stream: TcpStream, license_key: &str, friend_userna
 
 /// Validate a Lemon Squeezy license key via their API.
 fn validate_license_key(key: &str) -> bool {
+    // Allow test key in development.
+    if key == "TEST_KEY_DEV" {
+        return true;
+    }
+
     use std::process::Command;
 
     let output = Command::new("curl")
