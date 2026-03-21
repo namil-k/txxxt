@@ -271,14 +271,22 @@ fn config_path() -> Option<PathBuf> {
 /// Load config from disk. Returns default if file doesn't exist or is invalid.
 pub fn load() -> UserConfig {
     let Some(path) = config_path() else {
+        eprintln!("[config] no config path available");
         return UserConfig::default();
     };
+    eprintln!("[config] loading from: {}", path.display());
     match fs::read_to_string(&path) {
-        Ok(content) => toml::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("[config] parse error: {}", e);
+        Ok(content) => {
+            eprintln!("[config] file content ({} bytes): {:?}", content.len(), &content[..content.len().min(200)]);
+            toml::from_str(&content).unwrap_or_else(|e| {
+                eprintln!("[config] parse error: {}", e);
+                UserConfig::default()
+            })
+        },
+        Err(e) => {
+            eprintln!("[config] read error: {}", e);
             UserConfig::default()
-        }),
-        Err(_) => UserConfig::default(),
+        },
     }
 }
 
