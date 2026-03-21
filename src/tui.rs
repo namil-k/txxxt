@@ -452,17 +452,15 @@ impl App {
 
     /// Create a relay room: connect to relay server, send CREATE, get room code.
     fn start_relay_create(&mut self) {
-        if let Some(latest) = crate::check_version() {
-            self.flash(format!("update available: v{} → v{}. run 'txxxt update'", env!("CARGO_PKG_VERSION"), latest));
-            return;
-        }
         self.flash("connecting to relay...".into());
         let (tx, rx) = mpsc::channel();
 
         let handle = std::thread::spawn(move || -> Option<(std::net::TcpStream, SocketAddr)> {
             use std::io::{BufRead, BufReader, Write};
+            let addr = std::net::ToSocketAddrs::to_socket_addrs(&RELAY_ADDR)
+                .ok()?.next()?;
             let stream = std::net::TcpStream::connect_timeout(
-                &RELAY_ADDR.parse().ok()?,
+                &addr,
                 Duration::from_secs(5),
             ).ok()?;
             stream.set_read_timeout(Some(Duration::from_secs(120)).into()).ok();
@@ -498,10 +496,6 @@ impl App {
 
     /// Join a relay room with a code.
     fn start_relay_join(&mut self, code: &str) {
-        if let Some(latest) = crate::check_version() {
-            self.flash(format!("update available: v{} → v{}. run 'txxxt update'", env!("CARGO_PKG_VERSION"), latest));
-            return;
-        }
         let code = code.trim().to_uppercase();
         self.flash(format!("joining room {}...", code));
 
@@ -511,9 +505,10 @@ impl App {
 
         std::thread::spawn(move || {
             use std::io::{BufRead, BufReader, Write};
-            let addr = match RELAY_ADDR.parse() {
-                Ok(a) => a,
-                Err(_) => { let _ = err_tx.send("invalid relay address".into()); return; }
+            let addr = match std::net::ToSocketAddrs::to_socket_addrs(&RELAY_ADDR)
+                .ok().and_then(|mut addrs| addrs.next()) {
+                Some(a) => a,
+                None => { let _ = err_tx.send("invalid relay address".into()); return; }
             };
             let stream = match std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
                 Ok(s) => s,
