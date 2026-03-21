@@ -301,9 +301,9 @@ fn render_contour(
                 let left = is_fg(r, c - 1);
                 let right = is_fg(r, c + 1);
 
-                // Interior cell (all neighbors are fg) → space.
+                // Interior cell (all neighbors are fg) → solid fill.
                 if up && down && left && right {
-                    ' '
+                    '█'
                 } else {
                     // Pick box-drawing character based on which sides are exposed.
                     contour_char(up, down, left, right)

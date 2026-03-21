@@ -255,26 +255,28 @@ const MODEL_URL: &str = "https://huggingface.co/onnx-community/mediapipe_selfie_
 pub fn download_model_bg() {
     std::thread::spawn(|| {
         let path = default_model_path();
-        if path.exists() {
-            return;
-        }
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let output = std::process::Command::new("curl")
-            .args(["-fsSL", "-o"])
-            .arg(&path)
-            .arg(MODEL_URL)
-            .output();
-        match output {
-            Ok(o) if o.status.success() => {
-                eprintln!("segmentation model downloaded");
-            }
-            _ => {
-                eprintln!("failed to download segmentation model");
-                let _ = std::fs::remove_file(&path);
-            }
+        if !path.exists() {
+            download_file(MODEL_URL, &path, "segmentation");
         }
     });
 }
 
+fn download_file(url: &str, path: &std::path::Path, name: &str) {
+    let output = std::process::Command::new("curl")
+        .args(["-fsSL", "-o"])
+        .arg(path)
+        .arg(url)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            eprintln!("{} model downloaded", name);
+        }
+        _ => {
+            eprintln!("failed to download {} model", name);
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
