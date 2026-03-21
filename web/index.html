@@ -74,6 +74,39 @@
   .links a { color: #666; text-decoration: none; transition: color 0.2s; }
   .links a:hover { color: #00ff88; }
   .links span { color: #333; margin: 0 0.5rem; }
+  .plus-features { margin-bottom: 2rem; }
+  .feature {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid #1a1a1a;
+  }
+  .feature:last-child { border-bottom: none; }
+  .feature-icon { font-size: 1.3rem; flex-shrink: 0; margin-top: 0.1rem; }
+  .feature-title { color: #fff; font-size: 0.95rem; margin-bottom: 0.3rem; }
+  .feature-desc { color: #888; font-size: 0.8rem; line-height: 1.5; }
+  .plus-price {
+    background: #1a1a2e;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 1.5rem;
+    text-align: center;
+  }
+  .price-tag { font-size: 1.8rem; font-weight: bold; color: #fff; margin-bottom: 1rem; }
+  .buy-btn {
+    display: inline-block;
+    background: #00ff88;
+    color: #0a0a0a;
+    font-family: inherit;
+    font-size: 0.95rem;
+    font-weight: bold;
+    padding: 0.7rem 2rem;
+    border-radius: 6px;
+    text-decoration: none;
+    transition: opacity 0.2s;
+  }
+  .buy-btn:hover { opacity: 0.85; }
 </style>
 </head>
 <body>
@@ -124,7 +157,60 @@
         <a href="https://github.com/namil-k/txxxt">GitHub</a>
         <span>·</span>
         <a href="https://github.com/namil-k/txxxt/releases">Releases</a>
+        <span>·</span>
+        <a href="/plus">txxxt+</a>
       </div>
+    </div>
+  </div>
+
+  <!-- Plus page -->
+  <div id="plus-page" style="display:none">
+    <h1>txxxt<span style="color:#00ff88">+</span></h1>
+    <p class="subtitle">advanced features for txxxt</p>
+
+    <div class="plus-features">
+      <div class="feature">
+        <div class="feature-icon">👤</div>
+        <div>
+          <div class="feature-title">AI Background Removal</div>
+          <div class="feature-desc">Neural network person segmentation — isolate yourself from the background in real-time</div>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">✏️</div>
+        <div>
+          <div class="feature-title">Contour Mode</div>
+          <div class="feature-desc">Silhouette outline rendering using box-drawing characters — a unique ASCII art style</div>
+        </div>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">⚡</div>
+        <div>
+          <div class="feature-title">One-Time Purchase</div>
+          <div class="feature-desc">Pay once, use forever. No subscriptions. All future updates included.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="plus-price">
+      <div class="price-tag">₩5,000 <span style="color:#666;font-size:0.9rem;">one-time</span></div>
+      <a href="https://txxxt.lemonsqueezy.com/checkout/buy/eb3b7fbb-f850-4a9a-969f-7b9d2ed33503" class="buy-btn">Get txxxt+</a>
+    </div>
+
+    <div class="steps" style="margin-top:1.5rem;">
+      <h2>after purchase</h2>
+      <div class="step">
+        <div class="step-label">activate with your license key:</div>
+        <div class="cmd" id="activate-cmd">
+          <code>txxxt activate &lt;your-license-key&gt;</code>
+        </div>
+      </div>
+    </div>
+
+    <div class="links">
+      <a href="/">Home</a>
+      <span>·</span>
+      <a href="https://github.com/namil-k/txxxt">GitHub</a>
     </div>
   </div>
 </div>
@@ -132,9 +218,11 @@
 <script>
 var INSTALL_CMD = 'curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/main/install.sh | bash';
 var path = window.location.pathname.replace(/^\/+/, '').replace(/\/+$/, '');
-var code = (path && /^[A-Za-z0-9]{2,8}$/.test(path)) ? path.toUpperCase() : null;
+var code = (path && /^[A-Za-z0-9]{2,8}$/.test(path) && path.toLowerCase() !== 'plus') ? path.toUpperCase() : null;
 
-if (code) {
+if (path.toLowerCase() === 'plus') {
+  document.getElementById('plus-page').style.display = 'block';
+} else if (code) {
   document.getElementById('room-page').style.display = 'block';
   document.getElementById('room-code').textContent = code;
   document.getElementById('join-cmd-text').textContent = 'txxxt ' + code;

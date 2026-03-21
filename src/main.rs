@@ -31,6 +31,11 @@ struct Cli {
 enum Commands {
     /// Update txxxt to the latest version
     Update,
+    /// Activate txxxt+ with a license key
+    Activate {
+        /// License key from txxxt.me/plus
+        key: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -41,6 +46,18 @@ fn main() -> Result<()> {
         check_version();
     }
 
+    // Handle commands that don't need the camera first.
+    match &cli.command {
+        Some(Commands::Update) => {
+            return self_update();
+        }
+        Some(Commands::Activate { key }) => {
+            return activate_plus(key);
+        }
+        _ => {}
+    }
+
+    // Camera-dependent paths below.
     #[cfg(target_os = "macos")]
     nokhwa::nokhwa_initialize(|granted| {
         if !granted {
@@ -65,9 +82,7 @@ fn main() -> Result<()> {
             // Default: local ASCII webcam viewer (can start calls from TUI).
             tui::run_viewer(camera)?;
         }
-        Some(Commands::Update) => {
-            self_update()?;
-        }
+        _ => unreachable!(), // Update/Activate handled above.
     }
 
     Ok(())
@@ -133,6 +148,92 @@ fn check_version() {
             eprintln!("update failed, continuing with v{}...", current);
         }
     }
+}
+
+/// Activate txxxt+ by validating a license key via Lemon Squeezy and downloading the model.
+fn activate_plus(key: &str) -> Result<()> {
+    use std::process::Command;
+
+    println!("activating txxxt+...");
+
+    // 1. Validate license key via Lemon Squeezy API.
+    let output = Command::new("curl")
+        .args([
+            "-sSL", "--max-time", "10",
+            "-X", "POST",
+            "-H", "Content-Type: application/x-www-form-urlencoded",
+            "-d", &format!("license_key={}", key),
+            "https://api.lemonsqueezy.com/v1/licenses/validate",
+        ])
+        .output()?;
+
+    let body = String::from_utf8_lossy(&output.stdout);
+
+    if body.is_empty() {
+        anyhow::bail!("failed to reach license server. check your internet connection.");
+    }
+
+    // Parse "valid": true/false from JSON response.
+    let valid = body.contains("\"valid\":true") || body.contains("\"valid\": true");
+
+    if !valid {
+        // Try to extract error message.
+        let error = body
+            .split("\"error\"")
+            .nth(1)
+            .and_then(|s| s.split('"').nth(1))
+            .unwrap_or("invalid license key");
+        anyhow::bail!("activation failed: {}", error);
+    }
+
+    println!("license valid ✓");
+
+    // 2. Check if model is already downloaded.
+    let model_path = segmentation::default_model_path()
+        .ok_or_else(|| anyhow::anyhow!("could not determine cache directory"))?;
+
+    if model_path.exists() {
+        println!("txxxt+ is already activated!");
+        println!("model: {}", model_path.display());
+        return Ok(());
+    }
+
+    // 3. Download the ONNX model from HuggingFace.
+    println!("downloading segmentation model...");
+
+    let model_dir = model_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("invalid model path"))?;
+    std::fs::create_dir_all(model_dir)?;
+
+    let model_url = "https://huggingface.co/onnx-community/mediapipe_selfie_segmentation/resolve/main/selfie_segmentation.onnx";
+
+    let status = Command::new("curl")
+        .args([
+            "-fSL", "--max-time", "60",
+            "-o", &model_path.to_string_lossy(),
+            model_url,
+        ])
+        .status()?;
+
+    if !status.success() {
+        // Clean up partial download.
+        let _ = std::fs::remove_file(&model_path);
+        anyhow::bail!("failed to download model. check your internet connection.");
+    }
+
+    // 4. Verify the file was actually written.
+    let metadata = std::fs::metadata(&model_path)?;
+    if metadata.len() < 1000 {
+        let _ = std::fs::remove_file(&model_path);
+        anyhow::bail!("downloaded file appears corrupt (too small). try again.");
+    }
+
+    println!("txxxt+ activated! 🎉");
+    println!("model saved to: {}", model_path.display());
+    println!("\nrestart txxxt to use background (advanced) and contour features.");
+
+    Ok(())
 }
 
 fn self_update() -> Result<()> {
