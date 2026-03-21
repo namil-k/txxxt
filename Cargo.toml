@@ -1,6 +1,6 @@
 [package]
 name = "txxxt"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 default-run = "txxxt"
 description = "Terminal-based ASCII video call tool"
