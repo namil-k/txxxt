@@ -241,7 +241,40 @@ fn resize_mask(
 }
 
 /// Returns the default model file path.
-pub fn default_model_path() -> Option<std::path::PathBuf> {
-    dirs::cache_dir().map(|d| d.join("txxxt").join("models").join("selfie_segmentation.onnx"))
+pub fn default_model_path() -> std::path::PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("txxxt")
+        .join("models")
+        .join("selfie_segmentation.onnx")
+}
+
+const MODEL_URL: &str = "https://huggingface.co/onnx-community/mediapipe_selfie_segmentation/resolve/main/selfie_segmentation.onnx";
+
+/// Download the segmentation model in a background thread.
+pub fn download_model_bg() {
+    std::thread::spawn(|| {
+        let path = default_model_path();
+        if path.exists() {
+            return;
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let output = std::process::Command::new("curl")
+            .args(["-fsSL", "-o"])
+            .arg(&path)
+            .arg(MODEL_URL)
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                eprintln!("segmentation model downloaded");
+            }
+            _ => {
+                eprintln!("failed to download segmentation model");
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    });
 }
 

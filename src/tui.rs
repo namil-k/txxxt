@@ -127,7 +127,7 @@ impl PrefItem {
 pub enum VisualStyle {
     Charset(CharsetName),
     Outline,
-    /// Mask-based silhouette contour (pro feature).
+    /// Mask-based silhouette contour (requires segmentation model).
     Contour,
 }
 
@@ -623,13 +623,14 @@ impl App {
     }
 
     /// End the current call and return to local mode.
-    /// Apply a visual style, with pro-gating for Contour.
-    /// If Contour is selected, auto-enables Person bg_mode.
+    /// Apply a visual style.
+    /// If Contour is selected, auto-enables Person bg_mode (requires model).
     fn try_apply_style(&mut self, idx: usize) {
         let style = VisualStyle::ALL[idx];
         if matches!(style, VisualStyle::Contour) {
-            if !crate::config::is_plus() {
-                self.flash("txxxt+ feature — press [u] to upgrade".into());
+            if !crate::segmentation::default_model_path().exists() {
+                self.flash("downloading segmentation model...".into());
+                crate::segmentation::download_model_bg();
                 return;
             }
             // Auto-enable person segmentation for contour mode.
@@ -718,10 +719,11 @@ impl App {
                                 use crate::render::BgMode;
                                 if self.config.bg_mode == BgMode::Person {
                                     self.config.bg_mode = BgMode::Off;
-                                } else if crate::config::is_plus() {
+                                } else if crate::segmentation::default_model_path().exists() {
                                     self.config.bg_mode = BgMode::Person;
                                 } else {
-                                    self.flash("txxxt+ feature — press [u] to upgrade".into());
+                                    self.flash("downloading segmentation model...".into());
+                                    crate::segmentation::download_model_bg();
                                 }
                             }
                             SettingsItem::Mirror => {
@@ -1180,7 +1182,8 @@ fn run_main_loop(
 
     // Try to initialize segmenter if Person mode is already active.
     if app.config.bg_mode == crate::render::BgMode::Person {
-        if let Some(path) = crate::segmentation::default_model_path() {
+        let path = crate::segmentation::default_model_path();
+        if path.exists() {
             segmenter = crate::segmentation::Segmenter::new(&path).ok();
         }
     }
@@ -1235,7 +1238,8 @@ fn run_main_loop(
         // Lazily init/teardown segmenter based on current BgMode.
         match app.config.bg_mode {
             crate::render::BgMode::Person if segmenter.is_none() => {
-                if let Some(path) = crate::segmentation::default_model_path() {
+                let path = crate::segmentation::default_model_path();
+                if path.exists() {
                     match crate::segmentation::Segmenter::new(&path) {
                         Ok(s) => { segmenter = Some(s); }
                         Err(_) => {
@@ -1784,7 +1788,7 @@ fn render_style_picker(f: &mut ratatui::Frame, view_area: Rect, cursor: usize, c
     // Clear the area behind the panel.
     f.render_widget(Clear, panel_rect);
 
-    let model_available = crate::config::is_plus();
+    let model_available = crate::segmentation::default_model_path().exists();
     let items: Vec<Line<'static>> = VisualStyle::ALL
         .iter()
         .enumerate()
@@ -1822,7 +1826,7 @@ fn render_settings_panel(
     mirror_on: bool,
     brightness: u8,
 ) {
-    let model_available = crate::config::is_plus();
+    let model_available = crate::segmentation::default_model_path().exists();
 
     // Build row strings first, then derive panel width from content.
     let rows: Vec<(String, bool)> = SettingsItem::ALL
