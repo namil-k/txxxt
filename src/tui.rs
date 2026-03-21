@@ -626,7 +626,8 @@ impl App {
         let style = VisualStyle::ALL[idx];
         if matches!(style, VisualStyle::Contour) {
             if !crate::segmentation::is_model_available() {
-                self.flash("pro feature — run: txxxt activate <KEY>".into());
+                open_plus_page();
+self.flash("opening txxxt.me/plus...".into());
                 return;
             }
             // Auto-enable person segmentation for contour mode.
@@ -718,7 +719,8 @@ impl App {
                                 } else if crate::segmentation::is_model_available() {
                                     self.config.bg_mode = BgMode::Person;
                                 } else {
-                                    self.flash("pro feature — run: txxxt activate <KEY>".into());
+                                    open_plus_page();
+self.flash("opening txxxt.me/plus...".into());
                                 }
                             }
                             SettingsItem::Mirror => {
@@ -1203,7 +1205,8 @@ fn run_main_loop(
                 let elapsed = start.elapsed().as_secs();
                 let limit: u64 = 5 * 60;
                 if elapsed >= limit {
-                    app.flash("5 min limit — upgrade at txxxt.me/plus".into());
+                    open_plus_page();
+                    app.flash("5 min limit — opening txxxt.me/plus...".into());
                     app.end_call();
                 } else if limit - elapsed == 60 {
                     app.flash("1 minute remaining".into());
@@ -2048,6 +2051,17 @@ fn ascii_to_lines(grid: &[Vec<AsciiCell>]) -> Vec<Line<'static>> {
 
 use std::net::SocketAddr;
 use crate::net::protocol::{encode_frame, encode_audio, encode_status, decode_message, frame_to_grid, Message, PeerStatus};
+
+/// Open txxxt.me/plus in the default browser.
+fn open_plus_page() {
+    let url = "https://txxxt.me/plus";
+    #[cfg(target_os = "macos")]
+    { let _ = std::process::Command::new("open").arg(url).spawn(); }
+    #[cfg(target_os = "linux")]
+    { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
+    #[cfg(target_os = "windows")]
+    { let _ = std::process::Command::new("cmd").args(["/c", "start", url]).spawn(); }
+}
 
 /// Relay server address.
 const RELAY_ADDR: &str = "ballast.proxy.rlwy.net:32623";
