@@ -115,6 +115,7 @@ async fn main() {
 
                 // Convert tokio stream to std for use in sync threads.
                 let std_stream = tokio_stream.into_std().expect("failed to convert stream");
+                std_stream.set_nonblocking(false).expect("failed to set blocking mode");
 
                 let rooms = rooms.clone();
                 let presence = presence.clone();
