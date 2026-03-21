@@ -79,8 +79,7 @@ const PIP_DEFAULT_SCALE_IDX: usize = 2; // 25%
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsItem {
     Color,
-    BgMotion,
-    BgAI,
+    Background,
     Mirror,
     Brightness,
 }
@@ -88,8 +87,7 @@ enum SettingsItem {
 impl SettingsItem {
     const ALL: &'static [SettingsItem] = &[
         SettingsItem::Color,
-        SettingsItem::BgMotion,
-        SettingsItem::BgAI,
+        SettingsItem::Background,
         SettingsItem::Mirror,
         SettingsItem::Brightness,
     ];
@@ -97,8 +95,7 @@ impl SettingsItem {
     fn label(self) -> &'static str {
         match self {
             SettingsItem::Color => "color",
-            SettingsItem::BgMotion => "background (motion)",
-            SettingsItem::BgAI => "background (advanced)",
+            SettingsItem::Background => "background",
             SettingsItem::Mirror => "mirror",
             SettingsItem::Brightness => "bright threshold",
         }
@@ -139,6 +136,10 @@ impl VisualStyle {
         VisualStyle::Charset(CharsetName::Dots),
         VisualStyle::Charset(CharsetName::Digits),
         VisualStyle::Charset(CharsetName::Blocks),
+        VisualStyle::Charset(CharsetName::Hangul),
+        VisualStyle::Charset(CharsetName::Hiragana),
+        VisualStyle::Charset(CharsetName::Katakana),
+        VisualStyle::Charset(CharsetName::Hanja),
         VisualStyle::Outline,
         VisualStyle::Contour,
     ];
@@ -706,16 +707,7 @@ impl App {
                             SettingsItem::Color => {
                                 self.config.color = !self.config.color;
                             }
-                            SettingsItem::BgMotion => {
-                                use crate::render::BgMode;
-                                // Toggle: if currently Motion → Off, otherwise → Motion (turns off AI).
-                                self.config.bg_mode = if self.config.bg_mode == BgMode::Motion {
-                                    BgMode::Off
-                                } else {
-                                    BgMode::Motion
-                                };
-                            }
-                            SettingsItem::BgAI => {
+                            SettingsItem::Background => {
                                 use crate::render::BgMode;
                                 if self.config.bg_mode == BgMode::Person {
                                     self.config.bg_mode = BgMode::Off;
@@ -1299,7 +1291,8 @@ fn run_main_loop(
         // Render local ASCII grid (always at full terminal size — PIP display rescales later).
         let ascii_grid: Option<Vec<Vec<AsciiCell>>> = if let Ok((rgb, w, h)) = &frame_data {
             let area = terminal.size()?;
-            let view_cols = area.width.saturating_sub(2);
+            let raw_cols = area.width.saturating_sub(2);
+            let view_cols = if app.config.mode == RenderMode::Normal && app.config.charset.is_wide() { raw_cols / 2 } else { raw_cols };
             let view_rows = area.height.saturating_sub(3);
             let fg_mask: Option<&[bool]> = fg_mask_buf.as_deref();
             Some(render_frame(rgb, *w, *h, view_cols, view_rows, &app.config, fg_mask))
@@ -1640,8 +1633,8 @@ fn run_main_loop(
             let color_label = if color_on { "COLOR" } else { "MONO" };
             let bg_label = match bg_mode {
                 crate::render::BgMode::Off => "",
-                crate::render::BgMode::Motion => " BG:motion",
-                crate::render::BgMode::Person => " BG:adv",
+                crate::render::BgMode::Motion => " BG:on",
+                crate::render::BgMode::Person => " BG:on",
             };
             let mode_info = match &app_mode {
                 AppMode::Local => "[c]onnect [r]oom".to_string(),
@@ -1834,11 +1827,7 @@ fn render_settings_panel(
         .map(|&item| {
             let (value, dimmed) = match item {
                 SettingsItem::Color => (if color_on { "ON".into() } else { "OFF".into() }, false),
-                SettingsItem::BgMotion => {
-                    let on = bg_mode == crate::render::BgMode::Motion;
-                    (if on { "ON".into() } else { "OFF".into() }, false)
-                }
-                SettingsItem::BgAI => {
+                SettingsItem::Background => {
                     let on = bg_mode == crate::render::BgMode::Person;
                     let dimmed = !on && !model_available;
                     (if on { "ON".into() } else { "OFF".into() }, dimmed)

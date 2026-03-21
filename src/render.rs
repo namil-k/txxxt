@@ -124,8 +124,9 @@ pub fn render_frame(
                 None => true,
             };
 
+            let blank = if config.mode == RenderMode::Normal && config.charset.is_wide() { '\u{3000}' } else { ' ' };
             let ch = if brightness < config.brightness_threshold || !is_foreground {
-                ' '
+                blank
             } else {
                 match config.mode {
                     RenderMode::Normal => brightness_to_char(brightness, charset),
@@ -136,7 +137,7 @@ pub fn render_frame(
                 }
             };
 
-            let color = if config.color && ch != ' ' {
+            let color = if config.color && ch != ' ' && ch != '\u{3000}' {
                 Some(normalize_color_brightness(r, g, b))
             } else {
                 None
