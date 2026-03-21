@@ -50,7 +50,9 @@ async fn main() {
     let addr = format!("0.0.0.0:{}", port);
 
     // Connect to PostgreSQL.
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let db_url = std::env::var("DATABASE_PRIVATE_URL")
+        .or_else(|_| std::env::var("DATABASE_URL"))
+        .expect("DATABASE_PRIVATE_URL or DATABASE_URL must be set");
     let pool = PgPool::connect(&db_url).await.expect("failed to connect to database");
 
     // Run migrations / create tables.
