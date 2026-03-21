@@ -53,6 +53,7 @@ async fn main() {
     let db_url = std::env::var("DATABASE_PRIVATE_URL")
         .or_else(|_| std::env::var("DATABASE_URL"))
         .expect("DATABASE_PRIVATE_URL or DATABASE_URL must be set");
+    eprintln!("connecting to DB host: {}", db_url.split('@').nth(1).unwrap_or("(parse error)"));
     let pool = PgPool::connect(&db_url).await.expect("failed to connect to database");
 
     // Run migrations / create tables.
