@@ -34,15 +34,21 @@ fn presence_loop(token: &str, tx: mpsc::Sender<IncomingCall>) {
                 // Clean disconnect — retry after a short pause.
                 std::thread::sleep(Duration::from_secs(5));
             }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                // Auth failed — stop retrying (bad token).
+                break;
+            }
             Err(_) => {
-                // Error — retry after a longer pause.
+                // Network error — retry after a pause.
                 std::thread::sleep(Duration::from_secs(5));
             }
         }
-        // If the sender is closed (TUI exited), stop retrying.
+        // If the receiver is dropped (TUI exited), stop retrying.
+        // Use a zero-length probe — just check if the channel is still alive.
         if tx.send(IncomingCall { caller: String::new(), code: String::new() }).is_err() {
             break;
         }
+        // Note: empty caller/code probe is filtered out in TUI (see below).
     }
 }
 
@@ -61,9 +67,8 @@ fn connect_presence(token: &str, tx: &mpsc::Sender<IncomingCall>) -> std::io::Re
     let response = response.trim();
 
     if !response.starts_with("OK ") {
-        // Auth failed — don't retry automatically (bad token).
-        eprintln!("[presence] auth failed: {}", response);
-        return Ok(());
+        // Auth failed — bad/expired token. Stop silently.
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "auth failed"));
     }
 
     // Send PRESENCE

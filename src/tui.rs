@@ -26,6 +26,8 @@ pub enum Panel {
     Settings,
     Preference,
     Connect,
+    Account,
+    Friends,
 }
 
 /// App mode: local viewer or in-call.
@@ -80,6 +82,7 @@ const PIP_DEFAULT_SCALE_IDX: usize = 2; // 25%
 enum SettingsItem {
     Color,
     Background,
+    Contour,
     Mirror,
     Brightness,
 }
@@ -88,6 +91,7 @@ impl SettingsItem {
     const ALL: &'static [SettingsItem] = &[
         SettingsItem::Color,
         SettingsItem::Background,
+        SettingsItem::Contour,
         SettingsItem::Mirror,
         SettingsItem::Brightness,
     ];
@@ -96,6 +100,7 @@ impl SettingsItem {
         match self {
             SettingsItem::Color => "color",
             SettingsItem::Background => "background",
+            SettingsItem::Contour => "contour",
             SettingsItem::Mirror => "mirror",
             SettingsItem::Brightness => "bright threshold",
         }
@@ -124,8 +129,6 @@ impl PrefItem {
 pub enum VisualStyle {
     Charset(CharsetName),
     Outline,
-    /// Mask-based silhouette contour (requires segmentation model).
-    Contour,
 }
 
 impl VisualStyle {
@@ -141,14 +144,12 @@ impl VisualStyle {
         VisualStyle::Charset(CharsetName::Katakana),
         VisualStyle::Charset(CharsetName::Hanja),
         VisualStyle::Outline,
-        VisualStyle::Contour,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             VisualStyle::Charset(cs) => cs.label(),
             VisualStyle::Outline => "lines",
-            VisualStyle::Contour => "contour",
         }
     }
 
@@ -162,9 +163,6 @@ impl VisualStyle {
             VisualStyle::Outline => {
                 config.mode = RenderMode::Outline;
             }
-            VisualStyle::Contour => {
-                config.mode = RenderMode::Contour;
-            }
         }
     }
 
@@ -172,7 +170,6 @@ impl VisualStyle {
     pub fn from_config(config: &RenderConfig) -> Self {
         match config.mode {
             RenderMode::Outline => VisualStyle::Outline,
-            RenderMode::Contour => VisualStyle::Contour,
             RenderMode::Normal => VisualStyle::Charset(config.charset),
         }
     }
@@ -284,6 +281,26 @@ pub struct App {
     incoming_rx: Option<std::sync::mpsc::Receiver<crate::net::presence::IncomingCall>>,
     /// Pending incoming call waiting for user to accept/decline.
     pending_call: Option<crate::net::presence::IncomingCall>,
+    // ── Account panel ──
+    /// Which field is focused (0=key, 1=username).
+    account_field: usize,
+    /// License key text input.
+    account_key_input: String,
+    /// Username text input.
+    account_username_input: String,
+    /// Status message shown in account panel.
+    account_status: Option<String>,
+    // ── Friends panel ──
+    /// Cached friends list.
+    friends_list: Vec<String>,
+    /// Whether the add-friend input field is focused.
+    friends_adding: bool,
+    /// Add-friend text input.
+    friends_add_input: String,
+    /// Status message shown in friends panel.
+    friends_status: Option<String>,
+    /// Whether the help overlay is visible (independent of panel).
+    show_help: bool,
 }
 
 /// A directory entry for the preference file picker.
@@ -343,6 +360,15 @@ impl App {
             call_start: None,
             incoming_rx: None,
             pending_call: None,
+            account_field: 0,
+            account_key_input: String::new(),
+            account_username_input: String::new(),
+            account_status: None,
+            friends_list: Vec::new(),
+            friends_adding: false,
+            friends_add_input: String::new(),
+            friends_status: None,
+            show_help: false,
         }
     }
 
@@ -634,18 +660,8 @@ impl App {
 
     /// End the current call and return to local mode.
     /// Apply a visual style.
-    /// If Contour is selected, auto-enables Person bg_mode (requires model).
     fn try_apply_style(&mut self, idx: usize) {
         let style = VisualStyle::ALL[idx];
-        if matches!(style, VisualStyle::Contour) {
-            if !crate::segmentation::default_model_path().exists() {
-                self.flash("downloading segmentation model...".into());
-                crate::segmentation::download_model_bg();
-                return;
-            }
-            // Auto-enable person segmentation for contour mode.
-            self.config.bg_mode = crate::render::BgMode::Person;
-        }
         style.apply(&mut self.config);
     }
 
@@ -677,6 +693,67 @@ impl App {
     /// Unrecognized keys return (false, None) so they fall through to global handle_key.
     fn handle_panel_key(&mut self, key: KeyEvent) -> (bool, Option<ExportAction>) {
         let Some(panel) = self.panel else { return (false, None) };
+
+        // Allow switching between menu panels directly (except when typing in text fields).
+        let is_text_input = matches!(panel, Panel::Connect)
+            || (matches!(panel, Panel::Friends) && self.friends_adding)
+            || (matches!(panel, Panel::Account) && crate::config::get_account().is_none());
+
+        if !is_text_input {
+            match key.code {
+                KeyCode::Char('v') | KeyCode::Char('1') if panel == Panel::StylePicker => {
+                    self.panel = None;
+                    return (true, None);
+                }
+                KeyCode::Char('v') | KeyCode::Char('1') if panel != Panel::StylePicker => {
+                    self.panel = Some(Panel::StylePicker);
+                    self.panel_cursor = VisualStyle::from_config(&self.config).index();
+                    return (true, None);
+                }
+                KeyCode::Char('s') | KeyCode::Char('2') if panel == Panel::Settings => {
+                    self.panel = None;
+                    return (true, None);
+                }
+                KeyCode::Char('s') | KeyCode::Char('2') if panel != Panel::Settings => {
+                    self.panel = Some(Panel::Settings);
+                    self.panel_cursor = 0;
+                    return (true, None);
+                }
+                KeyCode::Char('f') if panel == Panel::Friends => {
+                    self.panel = None;
+                    return (true, None);
+                }
+                KeyCode::Char('f') if panel != Panel::Friends => {
+                    if crate::config::get_account().is_some() {
+                        self.open_friends_panel();
+                    }
+                    return (true, None);
+                }
+                KeyCode::Char('3') => {
+                    if crate::config::get_account().is_some() {
+                        if panel == Panel::Friends { self.panel = None; } else { self.open_friends_panel(); }
+                    } else {
+                        if panel == Panel::Account { self.panel = None; } else { self.open_account_panel(); }
+                    }
+                    return (true, None);
+                }
+                KeyCode::Char('a') if panel == Panel::Account => {
+                    self.panel = None;
+                    return (true, None);
+                }
+                KeyCode::Char('a') if panel != Panel::Account => {
+                    self.open_account_panel();
+                    return (true, None);
+                }
+                KeyCode::Char('4') => {
+                    if crate::config::get_account().is_some() {
+                        if panel == Panel::Account { self.panel = None; } else { self.open_account_panel(); }
+                    }
+                    return (true, None);
+                }
+                _ => {}
+            }
+        }
 
         match panel {
             Panel::StylePicker => {
@@ -727,6 +804,14 @@ impl App {
                                     crate::segmentation::download_model_bg();
                                 }
                             }
+                            SettingsItem::Contour => {
+                                if crate::segmentation::default_model_path().exists() {
+                                    self.config.contour = !self.config.contour;
+                                } else {
+                                    self.flash("downloading segmentation model...".into());
+                                    crate::segmentation::download_model_bg();
+                                }
+                            }
                             SettingsItem::Mirror => {
                                 self.config.mirror = !self.config.mirror;
                             }
@@ -741,7 +826,7 @@ impl App {
                             }
                         }
                     }
-                    KeyCode::Esc | KeyCode::Char('f') | KeyCode::Char('q') => {
+                    KeyCode::Esc | KeyCode::Char('s') | KeyCode::Char('q') => {
                         self.panel = None;
                     }
                     _ => return (false, None),
@@ -880,6 +965,185 @@ impl App {
                     _ => {}
                 }
             }
+            Panel::Account => {
+                let logged_in = crate::config::get_account().is_some();
+                if logged_in {
+                    // Logged-in view: only logout or close.
+                    match key.code {
+                        KeyCode::Char('l') => {
+                            // Logout: clear account from config.
+                            let mut cfg = crate::config::load();
+                            cfg.username = None;
+                            cfg.session_token = None;
+                            crate::config::save(&cfg);
+                            self.user_config = cfg;
+                            self.panel = None;
+                            self.flash("logged out".into());
+                        }
+                        KeyCode::Esc | KeyCode::Char('a') => {
+                            self.panel = None;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    // Register/login view.
+                    match key.code {
+                        KeyCode::Tab => {
+                            self.account_field = 1 - self.account_field;
+                        }
+                        KeyCode::Enter => {
+                            let key_str = self.account_key_input.trim().to_string();
+                            let username = self.account_username_input.trim().to_string();
+                            if key_str.is_empty() {
+                                self.account_status = Some("enter license key".into());
+                            } else if username.is_empty() {
+                                self.account_status = Some("enter username".into());
+                            } else {
+                                self.account_status = Some("registering...".into());
+                                match crate::net::relay::register(&key_str, &username) {
+                                    Ok((un, tok)) => {
+                                        crate::config::save_license_key(&key_str);
+                                        crate::config::save_account(&un, &tok);
+                                        self.user_config = crate::config::load();
+                                        self.panel = None;
+                                        self.flash(format!("registered as @{}", un));
+                                        // Start presence listener.
+                                        self.incoming_rx = Some(
+                                            crate::net::presence::start_presence(&tok),
+                                        );
+                                    }
+                                    Err(_) => {
+                                        // Register failed — try login instead (may already be registered).
+                                        match crate::net::relay::login(&key_str) {
+                                            Ok((un, tok)) => {
+                                                crate::config::save_account(&un, &tok);
+                                                self.user_config = crate::config::load();
+                                                self.panel = None;
+                                                self.flash(format!("logged in as @{}", un));
+                                                self.incoming_rx = Some(
+                                                    crate::net::presence::start_presence(&tok),
+                                                );
+                                            }
+                                            Err(e2) => {
+                                                self.account_status = Some(format!("{}", e2));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Esc | KeyCode::Char('\x1b') => {
+                            self.panel = None;
+                        }
+                        KeyCode::Backspace => {
+                            if self.account_field == 0 {
+                                self.account_key_input.pop();
+                            } else {
+                                self.account_username_input.pop();
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            if self.account_field == 0 {
+                                self.account_key_input.push(c);
+                            } else {
+                                self.account_username_input.push(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Panel::Friends => {
+                if self.friends_adding {
+                    // Add-friend input mode.
+                    match key.code {
+                        KeyCode::Enter => {
+                            let name = self.friends_add_input.trim().to_string();
+                            if !name.is_empty() {
+                                if let Some((_, token)) = crate::config::get_account() {
+                                    match crate::net::relay::friends_add(&token, &name) {
+                                        Ok(()) => {
+                                            self.friends_list.push(name.clone());
+                                            self.friends_add_input.clear();
+                                            self.friends_adding = false;
+                                            self.friends_status = Some(format!("added @{}", name));
+                                        }
+                                        Err(e) => {
+                                            self.friends_status = Some(format!("{}", e));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Esc | KeyCode::Tab => {
+                            self.friends_adding = false;
+                        }
+                        KeyCode::Backspace => {
+                            self.friends_add_input.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            self.friends_add_input.push(c);
+                        }
+                        _ => {}
+                    }
+                } else {
+                    // Friends list navigation mode.
+                    match key.code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.panel_cursor = self.panel_cursor.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if !self.friends_list.is_empty() && self.panel_cursor + 1 < self.friends_list.len() {
+                                self.panel_cursor += 1;
+                            }
+                        }
+                        KeyCode::Enter | KeyCode::Char('c') => {
+                            // Call selected friend.
+                            if let Some(friend) = self.friends_list.get(self.panel_cursor).cloned() {
+                                if let Some((_, token)) = crate::config::get_account() {
+                                    self.friends_status = Some(format!("calling @{}...", friend));
+                                    match crate::net::relay::call_user(&token, &friend) {
+                                        Ok(code) => {
+                                            self.panel = None;
+                                            self.start_relay_join(&code);
+                                        }
+                                        Err(e) => {
+                                            self.friends_status = Some(format!("{}", e));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char('x') => {
+                            // Remove selected friend.
+                            if let Some(friend) = self.friends_list.get(self.panel_cursor).cloned() {
+                                if let Some((_, token)) = crate::config::get_account() {
+                                    match crate::net::relay::friends_remove(&token, &friend) {
+                                        Ok(()) => {
+                                            self.friends_list.remove(self.panel_cursor);
+                                            if self.panel_cursor > 0 && self.panel_cursor >= self.friends_list.len() {
+                                                self.panel_cursor -= 1;
+                                            }
+                                            self.friends_status = Some(format!("removed @{}", friend));
+                                        }
+                                        Err(e) => {
+                                            self.friends_status = Some(format!("{}", e));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Tab => {
+                            self.friends_adding = true;
+                            self.friends_add_input.clear();
+                        }
+                        KeyCode::Esc | KeyCode::Char('f') => {
+                            self.panel = None;
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
         (true, None)
     }
@@ -929,16 +1193,19 @@ impl App {
                     self.connect_input.clear();
                 }
             }
+            KeyCode::Char('`') => {
+                self.show_help = !self.show_help;
+            }
             KeyCode::Char('r') => {
                 if self.mode == AppMode::Local {
                     self.start_relay_create();
                 }
             }
-            KeyCode::Char('v') => {
+            KeyCode::Char('v') | KeyCode::Char('1') => {
                 self.panel = Some(Panel::StylePicker);
                 self.panel_cursor = VisualStyle::from_config(&self.config).index();
             }
-            KeyCode::Char('f') => {
+            KeyCode::Char('s') | KeyCode::Char('2') => {
                 self.panel = Some(Panel::Settings);
                 self.panel_cursor = 0;
             }
@@ -946,6 +1213,32 @@ impl App {
                 self.panel = Some(Panel::Preference);
                 self.panel_cursor = 0;
                 self.pref_editing = false;
+            }
+            KeyCode::Char('a') => {
+                self.open_account_panel();
+            }
+            KeyCode::Char('4') => {
+                if crate::config::get_account().is_some() {
+                    // Logged in: 4 = account
+                    self.open_account_panel();
+                }
+                // Logged out: only 3 items, 4 does nothing.
+            }
+            KeyCode::Char('f') => {
+                if crate::config::get_account().is_some() {
+                    self.open_friends_panel();
+                } else {
+                    self.flash("login first: press [a]".into());
+                }
+            }
+            KeyCode::Char('3') => {
+                if crate::config::get_account().is_some() {
+                    // Logged in: 3 = friends
+                    self.open_friends_panel();
+                } else {
+                    // Logged out: 3 = account (no friends in menu)
+                    self.open_account_panel();
+                }
             }
             KeyCode::Char('y') => {
                 return Some(ExportAction::Save);
@@ -998,6 +1291,40 @@ impl App {
     /// Set a flash message to show in the status bar.
     fn flash(&mut self, msg: String) {
         self.flash_message = Some((msg, Instant::now()));
+    }
+
+    fn open_account_panel(&mut self) {
+        self.panel = Some(Panel::Account);
+        self.account_field = 0;
+        self.account_status = None;
+        if self.account_key_input.is_empty() {
+            if let Some(ref k) = self.user_config.license_key {
+                self.account_key_input = k.clone();
+            }
+        }
+    }
+
+    fn open_friends_panel(&mut self) {
+        self.panel = Some(Panel::Friends);
+        self.panel_cursor = 0;
+        self.friends_adding = false;
+        self.friends_add_input.clear();
+        self.friends_status = None;
+        if self.friends_list.is_empty() {
+            self.refresh_friends();
+        }
+    }
+
+    fn refresh_friends(&mut self) {
+        if let Some((_, token)) = crate::config::get_account() {
+            match crate::net::relay::friends_list(&token) {
+                Ok(list) => self.friends_list = list,
+                Err(e) => {
+                    self.friends_status = Some(format!("{}", e));
+                    self.friends_list.clear();
+                }
+            }
+        }
     }
 
     /// Get the current flash message if still within display time.
@@ -1160,7 +1487,7 @@ pub fn run_viewer_with_code(
     // Auto-join relay room.
     app.start_relay_join(code);
 
-    let result = run_main_loop(&mut app, camera, &mut terminal);
+    let result = run_main_loop(&mut app, camera, &mut terminal, None);
 
     crate::config::save(&crate::config::UserConfig::from_render_config(&app.config, &app.user_config));
 
@@ -1185,7 +1512,20 @@ pub fn run_viewer(
     app.user_config.apply_to(&mut app.config);
     app.incoming_rx = incoming_rx;
 
-    let result = run_main_loop(&mut app, camera, &mut terminal);
+    // Pre-fetch friends list in background.
+    let friends_rx = if let Some((_, token)) = crate::config::get_account() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            if let Ok(list) = crate::net::relay::friends_list(&token) {
+                let _ = tx.send(list);
+            }
+        });
+        Some(rx)
+    } else {
+        None
+    };
+
+    let result = run_main_loop(&mut app, camera, &mut terminal, friends_rx);
 
     crate::config::save(&crate::config::UserConfig::from_render_config(&app.config, &app.user_config));
     disable_raw_mode()?;
@@ -1198,7 +1538,9 @@ fn run_main_loop(
     app: &mut App,
     mut camera: CameraCapture,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    friends_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
 ) -> Result<()> {
+    let mut friends_rx = friends_rx;
     let target_frame_time = Duration::from_millis(66); // ~15 fps
     let mut last_fps_update = Instant::now();
     let mut frames_since_update = 0u32;
@@ -1223,11 +1565,22 @@ fn run_main_loop(
         // Check relay status.
         app.check_relay();
 
+        // Check for pre-fetched friends list.
+        if let Some(ref rx) = friends_rx {
+            if let Ok(list) = rx.try_recv() {
+                app.friends_list = list;
+                friends_rx = None; // consumed
+            }
+        }
+
         // Check for incoming calls from presence thread.
         if app.pending_call.is_none() {
             let call = app.incoming_rx.as_ref().and_then(|rx| rx.try_recv().ok());
             if let Some(call) = call {
-                app.pending_call = Some(call);
+                // Filter out empty probe messages from presence reconnection.
+                if !call.caller.is_empty() {
+                    app.pending_call = Some(call);
+                }
             }
         }
 
@@ -1272,31 +1625,43 @@ fn run_main_loop(
         // Capture camera frame.
         let frame_data = camera.frame_rgb();
 
-        // Lazily init/teardown segmenter based on current BgMode.
-        match app.config.bg_mode {
-            crate::render::BgMode::Person if segmenter.is_none() => {
-                let path = crate::segmentation::default_model_path();
-                if path.exists() {
-                    match crate::segmentation::Segmenter::new(&path) {
-                        Ok(s) => { segmenter = Some(s); }
-                        Err(_) => {
-                            app.flash("model load failed — falling back to motion".into());
-                            app.config.bg_mode = crate::render::BgMode::Motion;
-                        }
+        // Lazily init/teardown segmenter based on BgMode or contour.
+        let needs_segmenter = app.config.bg_mode == crate::render::BgMode::Person || app.config.contour;
+        if needs_segmenter && segmenter.is_none() {
+            let path = crate::segmentation::default_model_path();
+            if path.exists() {
+                match crate::segmentation::Segmenter::new(&path) {
+                    Ok(s) => { segmenter = Some(s); }
+                    Err(_) => {
+                        app.flash("model load failed".into());
+                        app.config.contour = false;
                     }
                 }
             }
-            crate::render::BgMode::Person => {} // already running
-            _ => {
-                // Drop segmenter when not in Person mode.
-                if segmenter.is_some() {
-                    segmenter = None;
-                    last_person_mask = None;
-                    prev_raw_mask = None;
+        } else if !needs_segmenter && segmenter.is_some() {
+            segmenter = None;
+            last_person_mask = None;
+            prev_raw_mask = None;
+        }
+
+        // Update person segmentation mask if segmenter is running.
+        if let Ok((rgb, w, h)) = &frame_data {
+            if let Some(ref seg) = segmenter {
+                seg.send_frame(rgb, *w, *h);
+                if let Some(new_mask) = seg.try_recv_mask() {
+                    last_person_mask = Some(match (&last_person_mask, &prev_raw_mask) {
+                        (Some(stable), Some(prev_raw)) if stable.len() == new_mask.len() && prev_raw.len() == new_mask.len() => {
+                            stable.iter().zip(prev_raw.iter()).zip(new_mask.iter())
+                                .map(|((&s, &pr), &n)| if pr == n { n } else { s }).collect()
+                        }
+                        _ => new_mask.clone(),
+                    });
+                    prev_raw_mask = Some(new_mask);
                 }
             }
         }
 
+        // Build fg_mask for background removal (separate from contour).
         let fg_mask_buf: Option<Vec<bool>> = if let Ok((rgb, w, h)) = &frame_data {
             match app.config.bg_mode {
                 crate::render::BgMode::Off => None,
@@ -1306,24 +1671,6 @@ fn run_main_loop(
                     Some(bg_model.foreground_mask(rgb))
                 }
                 crate::render::BgMode::Person => {
-                    // Send frame to ONNX thread.
-                    if let Some(ref seg) = segmenter {
-                        seg.send_frame(rgb, *w, *h);
-                        // Poll for new mask + temporal smoothing.
-                        if let Some(new_mask) = seg.try_recv_mask() {
-                            last_person_mask = Some(match (&last_person_mask, &prev_raw_mask) {
-                                (Some(stable), Some(prev_raw)) if stable.len() == new_mask.len() && prev_raw.len() == new_mask.len() => {
-                                    // Change only if both previous raw AND current raw agree (2-frame consensus).
-                                    stable.iter().zip(prev_raw.iter()).zip(new_mask.iter())
-                                        .map(|((&s, &pr), &n)| {
-                                            if pr == n { n } else { s }
-                                        }).collect()
-                                }
-                                _ => new_mask.clone(),
-                            });
-                            prev_raw_mask = Some(new_mask);
-                        }
-                    }
                     last_person_mask.clone()
                 }
             }
@@ -1340,7 +1687,18 @@ fn run_main_loop(
             let view_cols = if app.config.mode == RenderMode::Normal && app.config.charset.is_wide() { raw_cols / 2 } else { raw_cols };
             let view_rows = area.height.saturating_sub(3);
             let fg_mask: Option<&[bool]> = fg_mask_buf.as_deref();
-            Some(render_frame(rgb, *w, *h, view_cols, view_rows, &app.config, fg_mask))
+            let mut grid = render_frame(rgb, *w, *h, view_cols, view_rows, &app.config, fg_mask);
+            // Contour overlay uses person mask (independent of bg removal).
+            if app.config.contour {
+                if let Some(ref person_mask) = last_person_mask {
+                    crate::render::apply_contour_overlay(
+                        &mut grid, rgb, *w, *h,
+                        view_cols as u32, view_rows as u32,
+                        &app.config, person_mask,
+                    );
+                }
+            }
+            Some(grid)
         } else {
             None
         };
@@ -1465,21 +1823,17 @@ fn run_main_loop(
                 Layout::vertical([
                     Constraint::Min(1),
                     Constraint::Length(1),
-                    Constraint::Length(1),
                 ])
                 .split(area)
             } else {
                 Layout::vertical([
                     Constraint::Min(1),
-                    Constraint::Length(0),
-                    Constraint::Length(1),
                 ])
                 .split(area)
             };
 
             let video_area = chunks[0];
-            let audio_bar_area = chunks[1];
-            let status_area = chunks[2];
+            let audio_bar_area = if has_audio_bar { chunks[1] } else { chunks[0] };
 
             match &app_mode {
                 AppMode::Local
@@ -1488,28 +1842,22 @@ fn run_main_loop(
                     match ascii_ref {
                         Some(grid) => {
                             let lines = ascii_to_lines(grid);
-                            let title = match &app_mode {
-                                AppMode::RelayWaiting => {
-                                    if let Some(ref code) = relay_code {
-                                        format!(" txxxt — room: {} (waiting...) ", code)
-                                    } else {
-                                        " txxxt — creating room... ".to_string()
-                                    }
-                                }
-                                AppMode::RelayJoining => " txxxt — joining room... ".to_string(),
-                                _ => " txxxt ".to_string(),
-                            };
+                            let (menu_left, menu_right) = build_menu_title(open_panel, current_style, fps, app.show_help);
                             let p = Paragraph::new(lines).block(
                                 Block::default()
                                     .borders(Borders::ALL)
                                     .border_type(BorderType::Rounded)
-                                    .title(title),
+                                    .title(menu_left)
+                                    .title(ratatui::widgets::block::Title::from(menu_right).alignment(ratatui::layout::Alignment::Right)),
                             );
                             f.render_widget(p, video_area);
                         }
                         None => {
+                            let (menu_left, menu_right) = build_menu_title(open_panel, current_style, fps, app.show_help);
                             let p = Paragraph::new("Camera error — check permissions")
-                                .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" txxxt "));
+                                .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)
+                                    .title(menu_left)
+                                    .title(ratatui::widgets::block::Title::from(menu_right).alignment(ratatui::layout::Alignment::Right)));
                             f.render_widget(p, video_area);
                         }
                     }
@@ -1518,7 +1866,7 @@ fn run_main_loop(
                     render_panels(f, video_area, open_panel, panel_cursor, current_style,
                         color_on, bg_mode, app.config.mirror, brightness,
                         pref_editing, &pref_input, pref_save_dir.as_deref(),
-                        &pref_dir_entries, pref_dir_cursor, &connect_input);
+                        &pref_dir_entries, pref_dir_cursor, &connect_input, app);
                 }
                 AppMode::Call { peer_addr } => {
                     // FaceTime layout: remote = full screen, local = PIP top-right.
@@ -1638,8 +1986,13 @@ fn run_main_loop(
                     render_panels(f, video_area, open_panel, panel_cursor, current_style,
                         color_on, bg_mode, app.config.mirror, brightness,
                         pref_editing, &pref_input, pref_save_dir.as_deref(),
-                        &pref_dir_entries, pref_dir_cursor, &connect_input);
+                        &pref_dir_entries, pref_dir_cursor, &connect_input, app);
                 }
+            }
+
+            // Help overlay (independent of panels, top-right).
+            if app.show_help {
+                render_help_panel(f, video_area);
             }
 
             // Flash overlay.
@@ -1679,49 +2032,21 @@ fn run_main_loop(
                 }
             }
 
-            // Status bar.
-            let style_label = current_style.label();
-            let color_label = if color_on { "COLOR" } else { "MONO" };
-            let bg_label = match bg_mode {
-                crate::render::BgMode::Off => "",
-                crate::render::BgMode::Motion => " BG:on",
-                crate::render::BgMode::Person => " BG:on",
-            };
-            let mode_info = match &app_mode {
-                AppMode::Local => "[c]onnect [r]oom".to_string(),
+            // Status info shown as flash for relay/call modes.
+            match &app_mode {
                 AppMode::RelayWaiting => {
-                    if let Some(ref code) = relay_code {
-                        format!("room: {} — waiting for peer | [q]cancel", code)
+                    let msg = if let Some(ref code) = relay_code {
+                        format!("room: {} — waiting for peer", code)
                     } else {
-                        "creating room... | [q]cancel".to_string()
-                    }
-                }
-                AppMode::RelayJoining => "joining room... | [q]cancel".to_string(),
-                AppMode::Call { peer_addr: _ } => {
-                    let mic = if audio_muted { "🔇" } else { "🎙" };
-                    let cam = if camera_hidden { "📷❌" } else { "📷" };
-                    let remote_info = match remote_status {
-                        Some(rs) => {
-                            let rm = if rs.mic_muted { "🔇" } else { "🎙" };
-                            let rc = if rs.camera_hidden { "📷❌" } else { "📷" };
-                            format!(" | peer:{}{}", rm, rc)
-                        }
-                        None => String::new(),
+                        "creating room...".to_string()
                     };
-                    format!(
-                        "{}[m] {}[h]{} | [p]ip [+/-] | [q]uit",
-                        mic, cam, remote_info,
-                    )
+                    render_flash_overlay(f, video_area, &msg);
                 }
-            };
-            let status = format!(
-                " {} | {}{} | FPS: {:.0} | {} | [v]style [f]settings [y]save",
-                style_label, color_label, bg_label, fps, mode_info,
-            );
-            let status_line = Paragraph::new(status).style(
-                Style::default().fg(Color::Black).bg(Color::White),
-            );
-            f.render_widget(status_line, status_area);
+                AppMode::RelayJoining => {
+                    render_flash_overlay(f, video_area, "joining room...");
+                }
+                _ => {}
+            }
         })?;
 
         // FPS counter.
@@ -1786,6 +2111,99 @@ fn run_main_loop(
 
 /// Render overlay panels and connect panel on the given area.
 #[allow(clippy::too_many_arguments)]
+/// Build a menu bar title line for the video block border.
+fn build_menu_title(open_panel: Option<Panel>, current_style: VisualStyle, fps: f32, show_help: bool) -> (Line<'static>, Line<'static>) {
+    let logged_in = crate::config::get_account().is_some();
+    let username_display = match crate::config::get_account() {
+        Some((un, _)) => format!("@{}", un),
+        None => String::new(),
+    };
+
+    let highlight = Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD);
+    let normal = Style::default().fg(Color::White);
+    let dim = Style::default().fg(Color::DarkGray);
+
+    // (num, key_char, rest_of_label, Panel)
+    let items: Vec<(u8, char, &str, Panel)> = if logged_in {
+        vec![
+            (1, 'v', "isual", Panel::StylePicker),
+            (2, 's', "ettings", Panel::Settings),
+            (3, 'f', "riends", Panel::Friends),
+            (4, 'a', "ccount", Panel::Account),
+        ]
+    } else {
+        vec![
+            (1, 'v', "isual", Panel::StylePicker),
+            (2, 's', "ettings", Panel::Settings),
+            (3, 'a', "ccount", Panel::Account),
+        ]
+    };
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (num, key_char, rest, panel_type) in &items {
+        let is_active = match (&open_panel, panel_type) {
+            (Some(a), b) => std::mem::discriminant(a) == std::mem::discriminant(b),
+            _ => false,
+        };
+        if is_active {
+            spans.push(Span::styled(format!(" [{}]{} ({}) ", key_char, rest, num), highlight));
+        } else {
+            spans.push(Span::styled(" [".to_string(), normal));
+            spans.push(Span::styled(format!("{}", key_char), Style::default().fg(Color::Yellow)));
+            spans.push(Span::styled(format!("]{} ({}) ", rest, num), normal));
+        }
+        spans.push(Span::styled("│", dim));
+    }
+
+    // Right side info.
+    let style_label = current_style.label();
+    let right_info = if !username_display.is_empty() {
+        format!(" {} {} {:.0}fps ", username_display, style_label, fps)
+    } else {
+        format!(" {} {:.0}fps ", style_label, fps)
+    };
+    spans.push(Span::styled(right_info, dim));
+
+    let left = Line::from(spans);
+
+    let help_style = if show_help { highlight } else { normal };
+    let right = Line::from(vec![Span::styled(" [`]help ", help_style)]);
+
+    (left, right)
+}
+
+/// Calculate the x offset for a menu item's dropdown panel.
+/// Accounts for border (1 char) + menu item positions.
+fn menu_item_x(panel: Panel) -> u16 {
+    let logged_in = crate::config::get_account().is_some();
+    // Each item renders as " [k]rest (N) │"
+    // Width = 1(" ") + 1("[") + 1(key) + 1("]") + rest.len() + 1(" ") + 3("(N)") + 1(" ") + 1("│") = rest.len() + 10
+    let items: &[(&str, Panel)] = if logged_in {
+        &[
+            ("isual", Panel::StylePicker),
+            ("ettings", Panel::Settings),
+            ("riends", Panel::Friends),
+            ("ccount", Panel::Account),
+            ("onnect", Panel::Connect),
+        ]
+    } else {
+        &[
+            ("isual", Panel::StylePicker),
+            ("ettings", Panel::Settings),
+            ("ccount", Panel::Account),
+            ("onnect", Panel::Connect),
+        ]
+    };
+    let mut x: u16 = 1; // border left
+    for (rest, p) in items {
+        if std::mem::discriminant(p) == std::mem::discriminant(&panel) {
+            return x;
+        }
+        x += rest.len() as u16 + 10; // " [k]rest (N) │"
+    }
+    x
+}
+
 fn render_panels(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -1802,19 +2220,26 @@ fn render_panels(
     pref_dir_entries: &[DirEntry],
     pref_dir_cursor: Option<usize>,
     connect_input: &str,
+    app: &App,
 ) {
     match open_panel {
         Some(Panel::StylePicker) => {
             render_style_picker(f, area, panel_cursor, current_style);
         }
         Some(Panel::Settings) => {
-            render_settings_panel(f, area, panel_cursor, color_on, bg_mode, mirror_on, brightness);
+            render_settings_panel(f, area, panel_cursor, color_on, bg_mode, app.config.contour, mirror_on, brightness);
         }
         Some(Panel::Preference) => {
             render_preference_panel(f, area, panel_cursor, pref_editing, pref_input, pref_save_dir, pref_dir_entries, pref_dir_cursor);
         }
         Some(Panel::Connect) => {
             render_connect_panel(f, area, connect_input);
+        }
+        Some(Panel::Account) => {
+            render_account_panel(f, area, app);
+        }
+        Some(Panel::Friends) => {
+            render_friends_panel(f, area, app);
         }
         None => {}
     }
@@ -1824,26 +2249,21 @@ fn render_panels(
 fn render_style_picker(f: &mut ratatui::Frame, view_area: Rect, cursor: usize, current: VisualStyle) {
     let panel_w: u16 = 20;
     let panel_h = VisualStyle::ALL.len() as u16 + 2; // items + border
-    // Position: top-left corner of view area.
-    let x = view_area.x + 1;
+    let x = view_area.x + menu_item_x(Panel::StylePicker);
     let y = view_area.y + 1;
     let panel_rect = Rect::new(x, y, panel_w, panel_h);
 
     // Clear the area behind the panel.
     f.render_widget(Clear, panel_rect);
 
-    let model_available = crate::segmentation::default_model_path().exists();
     let items: Vec<Line<'static>> = VisualStyle::ALL
         .iter()
         .enumerate()
         .map(|(i, &vs)| {
             let marker = if vs == current { "● " } else { "  " };
             let label = format!("{}{}", marker, vs.label());
-            let is_locked = matches!(vs, VisualStyle::Contour) && !model_available;
             let style = if i == cursor {
                 Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
-            } else if is_locked {
-                Style::default().fg(Color::DarkGray)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -1867,6 +2287,7 @@ fn render_settings_panel(
     cursor: usize,
     color_on: bool,
     bg_mode: crate::render::BgMode,
+    contour_on: bool,
     mirror_on: bool,
     brightness: u8,
 ) {
@@ -1883,6 +2304,10 @@ fn render_settings_panel(
                     let dimmed = !on && !model_available;
                     (if on { "ON".into() } else { "OFF".into() }, dimmed)
                 }
+                SettingsItem::Contour => {
+                    let dimmed = !contour_on && !model_available;
+                    (if contour_on { "ON".into() } else { "OFF".into() }, dimmed)
+                }
                 SettingsItem::Mirror => (if mirror_on { "ON".into() } else { "OFF".into() }, false),
                 SettingsItem::Brightness => (format!("◀ {} ▶", brightness), false),
             };
@@ -1895,9 +2320,9 @@ fn render_settings_panel(
 
     let max_row_len = rows.iter().map(|(r, _)| r.len()).max().unwrap_or(10);
     // +2 for border left/right, min 14 to fit " settings " title
-    let panel_w = (max_row_len as u16 + 2).max(14);
+    let panel_w = (max_row_len as u16 + 4).max(16); // +4 for padding inside border
     let panel_h = SettingsItem::ALL.len() as u16 + 2;
-    let x = view_area.x + 1;
+    let x = view_area.x + menu_item_x(Panel::Settings);
     let y = view_area.y + 1;
     let panel_rect = Rect::new(x, y, panel_w, panel_h);
 
@@ -2034,7 +2459,7 @@ fn render_connect_panel(f: &mut ratatui::Frame, view_area: Rect, input: &str) {
     let row = format!(" room code: {}▏", input);
     let panel_w = (row.len() as u16 + 2).max(30).min(view_area.width.saturating_sub(4));
     let panel_h: u16 = 3;
-    let x = view_area.x + 1;
+    let x = view_area.x + menu_item_x(Panel::Connect);
     let y = view_area.y + 1;
     let panel_rect = Rect::new(x, y, panel_w, panel_h);
 
@@ -2113,8 +2538,7 @@ fn open_plus_page() {
     { let _ = std::process::Command::new("cmd").args(["/c", "start", url]).spawn(); }
 }
 
-/// Relay server address.
-const RELAY_ADDR: &str = "caboose.proxy.rlwy.net:28007";
+use crate::net::relay::RELAY_ADDR;
 
 /// Render an incoming call popup overlay.
 fn render_incoming_call_popup(f: &mut ratatui::Frame, view_area: Rect, caller: &str) {
@@ -2151,3 +2575,143 @@ fn render_incoming_call_popup(f: &mut ratatui::Frame, view_area: Rect, caller: &
     f.render_widget(content, popup_rect);
 }
 
+/// Render the account panel overlay.
+fn render_account_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let logged_in = crate::config::get_account();
+    let panel_w: u16 = 48;
+    let panel_h: u16 = if logged_in.is_some() { 6 } else { 12 };
+    let x = area.x + menu_item_x(Panel::Account);
+    let y = area.y + 1;
+    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+    f.render_widget(Clear, panel_rect);
+
+    if let Some((username, _)) = logged_in {
+        let lines = vec![
+            Line::raw(""),
+            Line::styled(format!("  logged in as @{}", username), Style::default().fg(Color::Green)),
+            Line::raw(""),
+            Line::styled("  [l] logout  [Esc] close", Style::default().fg(Color::DarkGray)),
+        ];
+        let content = Paragraph::new(lines).block(
+            Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" account "),
+        );
+        f.render_widget(content, panel_rect);
+    } else {
+        let key_style = if app.account_field == 0 {
+            Style::default().fg(Color::Black).bg(Color::White)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let user_style = if app.account_field == 1 {
+            Style::default().fg(Color::Black).bg(Color::White)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let mut lines = vec![
+            Line::raw(""),
+            Line::styled("  license key:", Style::default().fg(Color::DarkGray)),
+            Line::styled(format!("  > {}", &app.account_key_input), key_style),
+            Line::raw(""),
+            Line::styled("  username:", Style::default().fg(Color::DarkGray)),
+            Line::styled(format!("  > {}", &app.account_username_input), user_style),
+            Line::raw(""),
+            Line::styled("  [Enter] register  [Tab] switch", Style::default().fg(Color::DarkGray)),
+        ];
+        if let Some(ref status) = app.account_status {
+            lines.push(Line::styled(format!("  {}", status), Style::default().fg(Color::Yellow)));
+        }
+        let content = Paragraph::new(lines).block(
+            Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" account "),
+        );
+        f.render_widget(content, panel_rect);
+    }
+}
+
+/// Render the friends panel overlay.
+fn render_friends_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let list_len = app.friends_list.len().max(1);
+    let panel_h: u16 = (list_len as u16 + 7).min(area.height.saturating_sub(4));
+    let panel_w: u16 = 32;
+    let x = area.x + menu_item_x(Panel::Friends);
+    let y = area.y + 1;
+    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+    f.render_widget(Clear, panel_rect);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    if app.friends_list.is_empty() {
+        lines.push(Line::styled("  no friends yet", Style::default().fg(Color::DarkGray)));
+    } else {
+        for (i, name) in app.friends_list.iter().enumerate() {
+            let marker = if !app.friends_adding && i == app.panel_cursor { "> " } else { "  " };
+            let style = if !app.friends_adding && i == app.panel_cursor {
+                Style::default().fg(Color::Black).bg(Color::White)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::styled(format!("{}@{}", marker, name), style));
+        }
+    }
+
+    lines.push(Line::styled("  ────────────────────────", Style::default().fg(Color::DarkGray)));
+
+    // Add field
+    if app.friends_adding {
+        lines.push(Line::styled(
+            format!("  add: {}", &app.friends_add_input),
+            Style::default().fg(Color::Black).bg(Color::White),
+        ));
+    } else {
+        lines.push(Line::styled("  [Tab] add friend", Style::default().fg(Color::DarkGray)));
+    }
+
+    // Hints
+    if !app.friends_adding && !app.friends_list.is_empty() {
+        lines.push(Line::styled("  [Enter] call  [x] remove", Style::default().fg(Color::DarkGray)));
+    }
+
+    // Status
+    if let Some(ref status) = app.friends_status {
+        lines.push(Line::styled(format!("  {}", status), Style::default().fg(Color::Yellow)));
+    }
+
+    let content = Paragraph::new(lines).block(
+        Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" friends "),
+    );
+    f.render_widget(content, panel_rect);
+}
+
+/// Render the help panel overlay (centered).
+fn render_help_panel(f: &mut ratatui::Frame, area: Rect) {
+    let lines = vec![
+        Line::raw(""),
+        Line::styled("  [v]  visual style", Style::default().fg(Color::White)),
+        Line::styled("  [s]  settings", Style::default().fg(Color::White)),
+        Line::styled("  [a]  account", Style::default().fg(Color::White)),
+        Line::styled("  [f]  friends", Style::default().fg(Color::White)),
+        Line::raw(""),
+        Line::styled("  [r]  create room", Style::default().fg(Color::White)),
+        Line::styled("  [c]  connect (join room)", Style::default().fg(Color::White)),
+        Line::styled("  [y]  copy to clipboard", Style::default().fg(Color::White)),
+        Line::raw(""),
+        Line::styled("  call mode:", Style::default().fg(Color::DarkGray)),
+        Line::styled("  [m]  mute mic", Style::default().fg(Color::White)),
+        Line::styled("  [h]  hide camera", Style::default().fg(Color::White)),
+        Line::styled("  [p]  pip position", Style::default().fg(Color::White)),
+        Line::styled("  [+/-] pip size", Style::default().fg(Color::White)),
+        Line::raw(""),
+        Line::styled("  [q]  quit", Style::default().fg(Color::White)),
+        Line::styled("  [`]  close help", Style::default().fg(Color::DarkGray)),
+    ];
+    let panel_w: u16 = 30;
+    let panel_h = lines.len() as u16 + 2;
+    let x = area.x + area.width.saturating_sub(panel_w + 1); // top-right
+    let y = area.y + 1;
+    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+    f.render_widget(Clear, panel_rect);
+
+    let content = Paragraph::new(lines).block(
+        Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" help "),
+    );
+    f.render_widget(content, panel_rect);
+}

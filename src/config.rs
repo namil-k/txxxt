@@ -18,6 +18,8 @@ pub struct UserConfig {
     /// Legacy field — migrated to bg_mode on load.
     #[serde(default)]
     pub bg_removal: Option<bool>,
+    #[serde(default = "default_false")]
+    pub contour: bool,
     #[serde(default = "default_true")]
     pub mirror: bool,
     #[serde(default = "default_brightness_threshold")]
@@ -63,6 +65,7 @@ impl Default for UserConfig {
             color: false,
             bg_mode: "off".into(),
             bg_removal: None,
+            contour: false,
             mirror: true,
             brightness_threshold: 10,
             style: "standard".into(),
@@ -109,7 +112,8 @@ impl UserConfig {
         Self {
             color: config.color,
             bg_mode: bg_mode_to_str(config.bg_mode).to_string(),
-            bg_removal: None, // Don't save legacy field.
+            bg_removal: None,
+            contour: config.contour,
             mirror: config.mirror,
             brightness_threshold: config.brightness_threshold,
             style: style.label().to_string(),
@@ -125,6 +129,7 @@ impl UserConfig {
     pub fn apply_to(&self, config: &mut RenderConfig) {
         config.color = self.color;
         config.bg_mode = self.effective_bg_mode();
+        config.contour = self.contour;
         config.mirror = self.mirror;
         config.brightness_threshold = self.brightness_threshold;
 

@@ -9,8 +9,6 @@ mod render;
 mod segmentation;
 mod tui;
 
-use std::io::BufRead;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -120,7 +118,7 @@ fn main() -> Result<()> {
                 let account = config::get_account()
                     .ok_or_else(|| anyhow::anyhow!("not logged in. run: txxxt login"))?;
                 let (_username, token) = account;
-                tui::run_viewer_with_code(camera, &direct_call(&token, target)?, incoming_rx)?;
+                tui::run_viewer_with_code(camera, &net::relay::call_user(&token, target)?, incoming_rx)?;
             } else {
                 tui::run_viewer_with_code(camera, &code, incoming_rx)?;
             }
@@ -213,8 +211,7 @@ fn activate_plus(key: &str) -> Result<()> {
     let model_path = segmentation::default_model_path();
 
     if model_path.exists() {
-        println!("txxxt+ is already activated!");
-        println!("model: {}", model_path.display());
+        println!("txxxt+ activated ✓");
         return Ok(());
     }
 
@@ -280,34 +277,14 @@ fn self_update() -> Result<()> {
 
 /// Register a username with the relay server.
 fn cmd_register(username: &str) -> Result<()> {
-    use std::io::Write;
-    use std::net::TcpStream;
-
     let key = config::load()
         .license_key
         .ok_or_else(|| anyhow::anyhow!("no license key found. run: txxxt activate <KEY>"))?;
 
     println!("registering username @{}...", username);
-
-    let mut stream = TcpStream::connect(RELAY_ADDR)?;
-    write!(stream, "REGISTER {} {}\n", key, username)?;
-    stream.flush()?;
-
-    let mut reader = std::io::BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-    let response = response.trim();
-
-    if response == "OK" {
-        println!("registered as @{}", username);
-        // Automatically log in.
-        println!("logging in...");
-        drop(reader);
-        cmd_login_with_key(&key)?;
-    } else {
-        anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(response));
-    }
-
+    let (un, tok) = net::relay::register(&key, username)?;
+    config::save_account(&un, &tok);
+    println!("registered and logged in as @{}", un);
     Ok(())
 }
 
@@ -316,135 +293,38 @@ fn cmd_login() -> Result<()> {
     let key = config::load()
         .license_key
         .ok_or_else(|| anyhow::anyhow!("no license key found. run: txxxt activate <KEY>"))?;
-    cmd_login_with_key(&key)
-}
 
-fn cmd_login_with_key(key: &str) -> Result<()> {
-    use std::io::Write;
-    use std::net::TcpStream;
-
-    let mut stream = TcpStream::connect(RELAY_ADDR)?;
-    write!(stream, "LOGIN {}\n", key)?;
-    stream.flush()?;
-
-    let mut reader = std::io::BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-    let response = response.trim().to_string();
-
-    if let Some(rest) = response.strip_prefix("SESSION ") {
-        let parts: Vec<&str> = rest.splitn(2, ' ').collect();
-        if parts.len() == 2 {
-            let token = parts[0];
-            let username = parts[1];
-            config::save_account(username, token);
-            println!("logged in as @{}", username);
-        } else {
-            anyhow::bail!("unexpected server response: {}", response);
-        }
-    } else {
-        anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(&response));
-    }
-
+    let (username, token) = net::relay::login(&key)?;
+    config::save_account(&username, &token);
+    println!("logged in as @{}", username);
     Ok(())
 }
 
 /// Manage friends.
 fn cmd_friends(action: &FriendsAction) -> Result<()> {
-    use std::io::Write;
-    use std::net::TcpStream;
-
     let (_, token) = config::get_account()
         .ok_or_else(|| anyhow::anyhow!("not logged in. run: txxxt login"))?;
 
-    let mut stream = TcpStream::connect(RELAY_ADDR)?;
-
-    // Authenticate.
-    write!(stream, "AUTH {}\n", token)?;
-    stream.flush()?;
-    let mut reader = std::io::BufReader::new(stream.try_clone()?);
-    let mut auth_response = String::new();
-    reader.read_line(&mut auth_response)?;
-    let auth_response = auth_response.trim();
-    if !auth_response.starts_with("OK ") {
-        anyhow::bail!("authentication failed: {}", auth_response);
-    }
-
-    // Send friends command.
-    let cmd = match action {
-        FriendsAction::Add { username } => format!("FRIENDS ADD {}", username),
-        FriendsAction::Remove { username } => format!("FRIENDS REMOVE {}", username),
-        FriendsAction::List => "FRIENDS LIST".to_string(),
-    };
-    write!(stream, "{}\n", cmd)?;
-    stream.flush()?;
-
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-    let response = response.trim();
-
     match action {
         FriendsAction::List => {
-            if response == "FRIENDS" {
+            let friends = net::relay::friends_list(&token)?;
+            if friends.is_empty() {
                 println!("no friends yet");
-            } else if let Some(names) = response.strip_prefix("FRIENDS ") {
-                for name in names.split(',') {
-                    println!("@{}", name.trim());
-                }
             } else {
-                anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(response));
+                for name in &friends {
+                    println!("@{}", name);
+                }
             }
         }
         FriendsAction::Add { username } => {
-            if response == "OK" {
-                println!("added @{}", username);
-            } else {
-                anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(response));
-            }
+            net::relay::friends_add(&token, username)?;
+            println!("added @{}", username);
         }
         FriendsAction::Remove { username } => {
-            if response == "OK" {
-                println!("removed @{}", username);
-            } else {
-                anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(response));
-            }
+            net::relay::friends_remove(&token, username)?;
+            println!("removed @{}", username);
         }
     }
-
     Ok(())
 }
 
-/// Initiate a direct call to a username via relay. Returns the room code to join.
-fn direct_call(token: &str, target_username: &str) -> Result<String> {
-    use std::io::Write;
-    use std::net::TcpStream;
-
-    let mut stream = TcpStream::connect(RELAY_ADDR)?;
-
-    // Authenticate.
-    write!(stream, "AUTH {}\n", token)?;
-    stream.flush()?;
-    let mut reader = std::io::BufReader::new(stream.try_clone()?);
-    let mut auth_response = String::new();
-    reader.read_line(&mut auth_response)?;
-    let auth_response = auth_response.trim().to_string();
-    if !auth_response.starts_with("OK ") {
-        anyhow::bail!("authentication failed: {}", auth_response);
-    }
-
-    // Send CALL command.
-    write!(stream, "CALL {}\n", target_username)?;
-    stream.flush()?;
-
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-    let response = response.trim();
-
-    if let Some(code) = response.strip_prefix("ROOM ") {
-        Ok(code.trim().to_string())
-    } else {
-        anyhow::bail!("{}", response.strip_prefix("ERR ").unwrap_or(response));
-    }
-}
-
-const RELAY_ADDR: &str = "caboose.proxy.rlwy.net:28007";

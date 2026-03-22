@@ -5,8 +5,6 @@ use crate::charsets::{CharsetName, EDGE_CHARS};
 pub enum RenderMode {
     Normal,
     Outline,
-    /// Mask-based silhouette contour (pro feature, requires person segmentation).
-    Contour,
 }
 
 /// Background removal mode.
@@ -30,6 +28,8 @@ pub struct RenderConfig {
     pub bg_mode: BgMode,
     /// Horizontal mirror (default true — selfie/mirror view).
     pub mirror: bool,
+    /// Contour overlay: draw silhouette outline on top of normal render.
+    pub contour: bool,
 }
 
 impl Default for RenderConfig {
@@ -41,6 +41,7 @@ impl Default for RenderConfig {
             brightness_threshold: 10,
             bg_mode: BgMode::Off,
             mirror: true,
+            contour: false,
         }
     }
 }
@@ -70,11 +71,6 @@ pub fn render_frame(
     let rows = rows as u32;
     if cols == 0 || rows == 0 || img_width == 0 || img_height == 0 {
         return vec![];
-    }
-
-    // Contour mode: mask-based silhouette outline.
-    if config.mode == RenderMode::Contour {
-        return render_contour(rgb, img_width, img_height, cols, rows, config, fg_mask);
     }
 
     // Each terminal cell is roughly 2x taller than wide, so we sample accordingly.
@@ -133,7 +129,6 @@ pub fn render_frame(
                     RenderMode::Outline => {
                         edge_char(&gray, img_width, img_height, px, py, config.brightness_threshold)
                     }
-                    RenderMode::Contour => unreachable!(),
                 }
             };
 
@@ -239,24 +234,22 @@ fn luminance(r: u8, g: u8, b: u8) -> u8 {
     (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) as u8
 }
 
-/// Render contour mode: clean silhouette outline from the person mask.
-///
-/// Downsamples the per-pixel fg_mask to a per-cell boolean grid, then draws
-/// box-drawing characters at boundary cells (foreground cell adjacent to
-/// background cell).
-fn render_contour(
+/// Apply contour overlay: replace boundary cells with box-drawing characters.
+/// Interior cells keep their existing content (from normal/outline render).
+pub fn apply_contour_overlay(
+    grid: &mut Vec<Vec<AsciiCell>>,
     rgb: &[u8],
     img_width: u32,
     img_height: u32,
     cols: u32,
     rows: u32,
     config: &RenderConfig,
-    fg_mask: Option<&[bool]>,
-) -> Vec<Vec<AsciiCell>> {
+    fg_mask: &[bool],
+) {
     let cell_w = img_width as f32 / cols as f32;
     let cell_h = img_height as f32 / rows as f32;
 
-    // Build per-cell mask: a cell is "foreground" if >50% of sampled pixels are fg.
+    // Build per-cell mask.
     let cell_mask: Vec<Vec<bool>> = (0..rows)
         .map(|row| {
             (0..cols)
@@ -266,19 +259,13 @@ fn render_contour(
                     let py = ((row as f32 + 0.5) * cell_h) as u32;
                     let px = px.min(img_width - 1);
                     let py = py.min(img_height - 1);
-                    match fg_mask {
-                        Some(mask) => {
-                            let idx = (py * img_width + px) as usize;
-                            mask.get(idx).copied().unwrap_or(false)
-                        }
-                        None => false,
-                    }
+                    let idx = (py * img_width + px) as usize;
+                    fg_mask.get(idx).copied().unwrap_or(false)
                 })
                 .collect()
         })
         .collect();
 
-    // Helper to check if cell (r, c) is foreground.
     let is_fg = |r: i32, c: i32| -> bool {
         if r < 0 || c < 0 || r >= rows as i32 || c >= cols as i32 {
             return false;
@@ -286,35 +273,27 @@ fn render_contour(
         cell_mask[r as usize][c as usize]
     };
 
-    let mut result = Vec::with_capacity(rows as usize);
-
     for row in 0..rows {
-        let mut line = Vec::with_capacity(cols as usize);
         for col in 0..cols {
             let r = row as i32;
             let c = col as i32;
-            let here = is_fg(r, c);
+            if !is_fg(r, c) {
+                continue; // background cell — leave as is
+            }
 
-            // Contour: only draw at boundary cells.
-            let ch = if here {
-                let up = is_fg(r - 1, c);
-                let down = is_fg(r + 1, c);
-                let left = is_fg(r, c - 1);
-                let right = is_fg(r, c + 1);
+            let up = is_fg(r - 1, c);
+            let down = is_fg(r + 1, c);
+            let left = is_fg(r, c - 1);
+            let right = is_fg(r, c + 1);
 
-                // Interior cell (all neighbors are fg) → solid fill.
-                if up && down && left && right {
-                    '█'
-                } else {
-                    // Pick box-drawing character based on which sides are exposed.
-                    contour_char(up, down, left, right)
-                }
-            } else {
-                ' '
-            };
+            // Interior cell — keep existing render content.
+            if up && down && left && right {
+                continue;
+            }
 
-            let color = if config.color && ch != ' ' {
-                // Sample color from the original image at this cell.
+            // Boundary cell — replace with contour character.
+            let ch = contour_char(up, down, left, right);
+            let color = if config.color {
                 let src_col = if config.mirror { cols - 1 - col } else { col };
                 let x0 = ((src_col as f32) * cell_w) as u32;
                 let y0 = ((row as f32) * cell_h) as u32;
@@ -326,12 +305,9 @@ fn render_contour(
                 None
             };
 
-            line.push(AsciiCell { ch, color });
+            grid[row as usize][col as usize] = AsciiCell { ch, color };
         }
-        result.push(line);
     }
-
-    result
 }
 
 /// Pick a box-drawing character for a contour boundary cell.
