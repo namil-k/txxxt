@@ -163,6 +163,22 @@ fn handle_client(
         return handle_join(stream, rooms, code.trim().to_uppercase());
     }
 
+    // Dev-only: reset a user by license key so they can re-register.
+    if let Some(key) = cmd.strip_prefix("RESET ") {
+        let key = key.trim();
+        let rt = tokio::runtime::Handle::current();
+        let _ = rt.block_on(async {
+            sqlx::query("DELETE FROM sessions WHERE license_key = $1").bind(key).execute(&pool).await
+        });
+        let _ = rt.block_on(async {
+            sqlx::query("DELETE FROM users WHERE license_key = $1").bind(key).execute(&pool).await
+        });
+        eprintln!("reset user with key {}", &key[..key.len().min(8)]);
+        write!(stream, "OK\n")?;
+        stream.flush()?;
+        return Ok(());
+    }
+
     if let Some(rest) = cmd.strip_prefix("REGISTER ") {
         return handle_register(stream, rest.trim(), pool);
     }
