@@ -240,11 +240,14 @@ fn resize_mask(
     dst
 }
 
-/// Returns the default model file path.
+/// Returns the default model file path: ~/.cache/txxxt/models/ (XDG standard)
 pub fn default_model_path() -> std::path::PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("txxxt")
+    let base = std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join("txxxt")
         .join("models")
         .join("selfie_segmentation.onnx")
 }

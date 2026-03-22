@@ -189,6 +189,8 @@ fn now_unix() -> u64 {
 pub fn revalidate_license() {
     let config = load();
     let Some(key) = &config.license_key else { return };
+    // Dev bypass — skip API validation entirely.
+    if key == "TEST_KEY_DEV" { return; }
     let Some(validated_at) = config.license_validated_at else {
         // Key exists but was never validated — revoke it.
         revoke_license();
@@ -263,30 +265,37 @@ pub fn url_encode(s: &str) -> String {
     encoded
 }
 
-/// Config file path: ~/.config/txxxt/config.toml
+/// Config file path: ~/.config/txxxt/config.toml (XDG standard)
 fn config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("txxxt").join("config.toml"))
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")));
+    base.map(|d| d.join("txxxt").join("config.toml"))
 }
 
 /// Load config from disk. Returns default if file doesn't exist or is invalid.
+/// Migrates from legacy path (~/Library/Application Support/txxxt/) on first load.
 pub fn load() -> UserConfig {
     let Some(path) = config_path() else {
-        eprintln!("[config] no config path available");
         return UserConfig::default();
     };
-    eprintln!("[config] loading from: {}", path.display());
+
+    // Migrate from legacy macOS path if new path doesn't exist yet.
+    if !path.exists() {
+        if let Some(legacy) = dirs::config_dir().map(|d| d.join("txxxt").join("config.toml")) {
+            if legacy != path && legacy.exists() {
+                if let Some(parent) = path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::rename(&legacy, &path);
+            }
+        }
+    }
+
     match fs::read_to_string(&path) {
-        Ok(content) => {
-            eprintln!("[config] file content ({} bytes): {:?}", content.len(), &content[..content.len().min(200)]);
-            toml::from_str(&content).unwrap_or_else(|e| {
-                eprintln!("[config] parse error: {}", e);
-                UserConfig::default()
-            })
-        },
-        Err(e) => {
-            eprintln!("[config] read error: {}", e);
-            UserConfig::default()
-        },
+        Ok(content) => toml::from_str(&content).unwrap_or_default(),
+        Err(_) => UserConfig::default(),
     }
 }
 
