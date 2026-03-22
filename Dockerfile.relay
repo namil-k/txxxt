@@ -6,6 +6,6 @@ RUN cargo build --release --no-default-features --features relay --bin txxxt-rel
 
 # --- Runtime (ubuntu 24.04 = GLIBC 2.39) ---
 FROM ubuntu:24.04
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/txxxt-relay /usr/local/bin/
 CMD ["txxxt-relay"]
