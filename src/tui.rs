@@ -1310,9 +1310,6 @@ impl App {
         self.friends_adding = false;
         self.friends_add_input.clear();
         self.friends_status = None;
-        if self.friends_list.is_empty() {
-            self.refresh_friends();
-        }
     }
 
     fn refresh_friends(&mut self) {

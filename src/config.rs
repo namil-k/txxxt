@@ -50,7 +50,7 @@ fn default_true() -> bool {
     true
 }
 fn default_brightness_threshold() -> u8 {
-    10
+    85
 }
 fn default_style() -> String {
     "standard".into()
@@ -67,7 +67,7 @@ impl Default for UserConfig {
             bg_removal: None,
             contour: false,
             mirror: true,
-            brightness_threshold: 10,
+            brightness_threshold: 85,
             style: "standard".into(),
             save_dir: None,
             license_key: None,

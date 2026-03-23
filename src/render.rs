@@ -38,7 +38,7 @@ impl Default for RenderConfig {
             mode: RenderMode::Normal,
             charset: CharsetName::Standard,
             color: false,
-            brightness_threshold: 10,
+            brightness_threshold: 85,
             bg_mode: BgMode::Off,
             mirror: true,
             contour: false,
