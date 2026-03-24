@@ -17,6 +17,31 @@
 
 Turn your webcam into real-time ASCII art. Call your friends — right from your terminal.
 
+<p align="center">
+  <img src="assets/standard.png" width="700" alt="txxxt standard mode" />
+</p>
+
+## Visual Styles
+
+<table>
+  <tr>
+    <td align="center"><img src="assets/blocks.png" width="350" alt="blocks" /><br /><b>blocks</b></td>
+    <td align="center"><img src="assets/korean.png" width="350" alt="한글" /><br /><b>한글</b></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="assets/lines.png" width="350" alt="lines" /><br /><b>lines</b></td>
+    <td align="center"><img src="assets/korean-no-color.png" width="350" alt="한글 no color" /><br /><b>한글 + no color</b></td>
+  </tr>
+</table>
+
+## Background Removal
+
+<p align="center">
+  <img src="assets/korean-no-bg.png" width="700" alt="한글 with background removal" />
+</p>
+
+AI-powered body segmentation removes the background in real time. Works with any visual style.
+
 ## Quick Start
 
 ```bash
