@@ -5,6 +5,7 @@ edition = "2021"
 default-run = "txxxt"
 description = "Terminal-based ASCII video call tool"
 license = "MIT"
+repository = "https://github.com/namil-k/txxxt"
 
 [[bin]]
 name = "txxxt"
