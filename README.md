@@ -67,12 +67,13 @@ Then run: `txxxt`
 ## Features
 
 - **ASCII webcam viewer** — 10 visual styles (standard, letters, dots, digits, blocks, 한글, ひらがな, カタカナ, 漢字, lines)
+- **Image import** — convert any image to ASCII art with style, scale, rotate, and contrast controls
 - **Video call** — relay-based, works across any network
 - **Audio** — mic + speaker with echo cancellation
 - **Friends & direct call** — register a username, add friends, call @username
 - **Room codes** — press `r`, share a 6-char code, done
 - **Contour overlay** — silhouette outline drawn on top of any visual style
-- **Background removal** — body or face-only segmentation (ONNX)
+- **Background removal** — AI body segmentation (ONNX)
 - **PIP layout** — FaceTime-style with movable, resizable picture-in-picture
 - **Menu bar** — macOS-style top menu with keyboard shortcuts
 - **Auto-update** — `txxxt update`
@@ -106,6 +107,18 @@ txxxt @username
 
 Or press `f` (friends) in the app and select a friend to call.
 
+## Image Import
+
+Convert any image to ASCII art — in the TUI or from the command line.
+
+**TUI:** Press `i` to open the file browser, select an image, then adjust style (`v`), settings (`s`), rotate (`r`), and mirror (`m`). Save with `,` or copy with `y`.
+
+**CLI:**
+
+```bash
+txxxt convert photo.jpg --style katakana --color -o output.html
+```
+
 ## Account & Friends
 
 Register a username to use friends and direct calling:
@@ -124,9 +137,10 @@ Or do everything inside the TUI — press `a` (account) to register/login, then 
 | Key | Action |
 |-----|--------|
 | `v` / `1` | Visual style picker |
-| `s` / `2` | Settings (color, background, contour, mirror, brightness) |
-| `f` / `3` | Friends (add, remove, call) |
-| `a` / `4` | Account (register, login, logout) |
+| `s` / `2` | Settings (color, background, contour, contrast, brightness) |
+| `i` / `3` | Import image (file browser) |
+| `f` / `4` | Friends (add, remove, call) |
+| `a` / `5` | Account (register, login, logout) |
 | `` ` `` | Help overlay |
 
 ### General
@@ -136,7 +150,15 @@ Or do everything inside the TUI — press `a` (account) to register/login, then 
 | `r` | Create relay room |
 | `c` | Connect (room code) |
 | `y` | Copy snapshot to clipboard |
-| `q` | Quit |
+| `q` | Quit (or exit import mode) |
+
+### Import Mode
+
+| Key | Action |
+|-----|--------|
+| `r` | Rotate 90° |
+| `m` | Mirror (flip horizontal) |
+| `q` | Back to webcam |
 
 ### In Call
 
@@ -159,6 +181,12 @@ txxxt register <NAME>  # register username
 txxxt login            # login with saved key
 txxxt friends list     # list friends
 txxxt friends add <U>  # add friend
+
+# convert image to ASCII art
+txxxt convert photo.jpg                          # print to terminal
+txxxt convert photo.jpg --style hangul --color   # styled output
+txxxt convert photo.jpg -o out.html              # save as HTML
+txxxt convert photo.jpg -o out.txt --width 80    # save as text
 ```
 
 ## Build from Source
