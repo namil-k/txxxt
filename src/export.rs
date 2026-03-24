@@ -83,6 +83,11 @@ fn timestamp() -> String {
     format!("{:04}{:02}{:02}_{:02}{:02}{:02}", year, month, day, hours, minutes, seconds)
 }
 
+/// Public wrapper for days_to_ymd (used by config.rs).
+pub fn days_to_ymd_pub(days: u64) -> (u64, u64, u64) {
+    days_to_ymd(days)
+}
+
 /// Convert days since Unix epoch to (year, month, day).
 fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
     let mut year = 1970u64;

@@ -41,6 +41,12 @@ pub struct UserConfig {
     /// Session token for authenticated relay commands.
     #[serde(default)]
     pub session_token: Option<String>,
+    /// Number of calls made today (free users: max 5/day).
+    #[serde(default)]
+    pub calls_today: u8,
+    /// Date of last call count (YYYY-MM-DD). Resets when day changes.
+    #[serde(default)]
+    pub calls_date: Option<String>,
 }
 
 fn default_false() -> bool {
@@ -74,6 +80,8 @@ impl Default for UserConfig {
             license_validated_at: None,
             username: None,
             session_token: None,
+            calls_today: 0,
+            calls_date: None,
         }
     }
 }
@@ -122,6 +130,8 @@ impl UserConfig {
             license_validated_at: prev.license_validated_at,
             username: prev.username.clone(),
             session_token: prev.session_token.clone(),
+            calls_today: prev.calls_today,
+            calls_date: prev.calls_date.clone(),
         }
     }
 
@@ -147,6 +157,55 @@ impl UserConfig {
 pub fn is_plus() -> bool {
     let config = load();
     config.license_key.is_some() && config.license_validated_at.is_some()
+}
+
+/// Maximum daily calls for free users.
+const MAX_FREE_CALLS: u8 = 5;
+
+/// Get today's date as YYYY-MM-DD string (UTC).
+fn today_str() -> String {
+    let secs = now_unix();
+    let days = secs / 86400;
+    let (y, m, d) = crate::export::days_to_ymd_pub(days);
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+/// Check if the user can start a new call. Returns remaining calls or error message.
+pub fn can_start_call() -> Result<u8, String> {
+    if is_plus() {
+        return Ok(u8::MAX);
+    }
+    let mut config = load();
+    let today = today_str();
+
+    // Reset counter if new day.
+    if config.calls_date.as_deref() != Some(&today) {
+        config.calls_today = 0;
+        config.calls_date = Some(today);
+        save(&config);
+    }
+
+    if config.calls_today >= MAX_FREE_CALLS {
+        Err(format!("daily limit reached ({}/{})", MAX_FREE_CALLS, MAX_FREE_CALLS))
+    } else {
+        Ok(MAX_FREE_CALLS - config.calls_today)
+    }
+}
+
+/// Increment the daily call counter. Call this when a call actually starts.
+pub fn increment_call_count() {
+    if is_plus() {
+        return;
+    }
+    let mut config = load();
+    let today = today_str();
+
+    if config.calls_date.as_deref() != Some(&today) {
+        config.calls_today = 0;
+        config.calls_date = Some(today);
+    }
+    config.calls_today += 1;
+    save(&config);
 }
 
 /// Save a license key to config with current timestamp.

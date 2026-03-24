@@ -428,6 +428,7 @@ fn cmd_convert(
         charset,
         color: *color,
         brightness_threshold: 85,
+        gamma: 1.0,
         bg_mode: if *bg { BgMode::Person } else { BgMode::Off },
         mirror: false,
         contour: false,

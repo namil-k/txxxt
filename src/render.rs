@@ -24,6 +24,8 @@ pub struct RenderConfig {
     pub charset: CharsetName,
     pub color: bool,
     pub brightness_threshold: u8,
+    /// Gamma/contrast: 1.0 = linear, >1.0 = more contrast (brights brighter, darks darker).
+    pub gamma: f32,
     /// Background removal mode.
     pub bg_mode: BgMode,
     /// Horizontal mirror (default true — selfie/mirror view).
@@ -39,6 +41,7 @@ impl Default for RenderConfig {
             charset: CharsetName::Standard,
             color: false,
             brightness_threshold: 85,
+            gamma: 1.0,
             bg_mode: BgMode::Off,
             mirror: true,
             contour: false,
@@ -109,7 +112,13 @@ pub fn render_frame(
             let px = ((x0 + x1) / 2).min(img_width - 1);
             let py = ((y0 + y1) / 2).min(img_height - 1);
 
-            let brightness = luminance(r, g, b);
+            let raw_brightness = luminance(r, g, b);
+            // Apply gamma curve: normalized → pow(gamma) → back to 0-255.
+            let brightness = if config.gamma != 1.0 {
+                ((raw_brightness as f32 / 255.0).powf(config.gamma) * 255.0) as u8
+            } else {
+                raw_brightness
+            };
 
             // In Outline mode, skip background pixels entirely.
             let is_foreground = match fg_mask {

@@ -86,8 +86,10 @@ enum SettingsItem {
     Contour,
     Mirror,
     Brightness,
+    Contrast,
     // Import-only items:
     ImportFit,
+    ImportScale,
     ImportRotate,
     ImportFlip,
 }
@@ -131,6 +133,7 @@ impl SettingsItem {
         SettingsItem::Contour,
         SettingsItem::Mirror,
         SettingsItem::Brightness,
+        SettingsItem::Contrast,
     ];
 
     const ALL_WITH_IMPORT: &'static [SettingsItem] = &[
@@ -138,7 +141,9 @@ impl SettingsItem {
         SettingsItem::Background,
         SettingsItem::Contour,
         SettingsItem::Brightness,
+        SettingsItem::Contrast,
         SettingsItem::ImportFit,
+        SettingsItem::ImportScale,
         SettingsItem::ImportRotate,
         SettingsItem::ImportFlip,
     ];
@@ -150,7 +155,9 @@ impl SettingsItem {
             SettingsItem::Contour => "contour",
             SettingsItem::Mirror => "mirror",
             SettingsItem::Brightness => "bright threshold",
+            SettingsItem::Contrast => "contrast",
             SettingsItem::ImportFit => "fit",
+            SettingsItem::ImportScale => "scale",
             SettingsItem::ImportRotate => "rotate",
             SettingsItem::ImportFlip => "flip",
         }
@@ -360,6 +367,8 @@ pub struct App {
     import_rotation: u16,
     /// Import fit mode.
     import_fit: ImportFit,
+    /// Import scale percentage (10-100).
+    import_scale: u8,
     /// Current directory in file browser.
     import_path: std::path::PathBuf,
     /// Directory entries (name, is_dir) for file browser.
@@ -438,6 +447,7 @@ impl App {
             import_mirror: false,
             import_rotation: 0,
             import_fit: ImportFit::Width,
+            import_scale: 100,
             import_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
             import_entries: Vec::new(),
             import_selected: 0,
@@ -446,6 +456,7 @@ impl App {
 
     /// Setup call state with an established TCP connection.
     fn setup_call(&mut self, stream: std::net::TcpStream, peer_addr: SocketAddr) {
+        crate::config::increment_call_count();
         stream.set_nonblocking(false).ok();
         let reader_stream = stream.try_clone().expect("failed to clone stream");
         let writer_stream = stream;
@@ -557,6 +568,10 @@ impl App {
 
     /// Create a relay room: connect to relay server, send CREATE, get room code.
     fn start_relay_create(&mut self) {
+        if let Err(msg) = crate::config::can_start_call() {
+            self.flash(format!("{} — press [u] to upgrade", msg));
+            return;
+        }
         self.flash("connecting to relay...".into());
         let (tx, rx) = mpsc::channel();
 
@@ -601,6 +616,10 @@ impl App {
 
     /// Join a relay room with a code.
     fn start_relay_join(&mut self, code: &str) {
+        if let Err(msg) = crate::config::can_start_call() {
+            self.flash(format!("{} — press [u] to upgrade", msg));
+            return;
+        }
         let code = code.trim().to_uppercase();
         self.flash(format!("joining room {}...", code));
 
@@ -918,8 +937,22 @@ impl App {
                                         self.config.brightness_threshold.saturating_sub(5);
                                 }
                             }
+                            SettingsItem::Contrast => {
+                                if is_right {
+                                    self.config.gamma = (self.config.gamma + 0.1).min(3.0);
+                                } else {
+                                    self.config.gamma = (self.config.gamma - 0.1).max(0.3);
+                                }
+                            }
                             SettingsItem::ImportFit => {
                                 self.import_fit = if is_right { self.import_fit.next() } else { self.import_fit.prev() };
+                            }
+                            SettingsItem::ImportScale => {
+                                if is_right {
+                                    self.import_scale = (self.import_scale + 10).min(100);
+                                } else {
+                                    self.import_scale = self.import_scale.saturating_sub(10).max(10);
+                                }
                             }
                             SettingsItem::ImportRotate => {
                                 if is_right {
@@ -1525,6 +1558,7 @@ impl App {
                 self.import_mirror = false;
                 self.import_rotation = 0;
                 self.import_fit = ImportFit::Width;
+                self.import_scale = 100;
                 self.panel = None;
                 self.flash_message = Some((format!("imported: {}", path.file_name().unwrap_or_default().to_string_lossy()), Instant::now()));
             }
@@ -1943,23 +1977,26 @@ fn run_main_loop(
             let max_cols = if app.config.mode == RenderMode::Normal && app.config.charset.is_wide() { raw_cols / 2 } else { raw_cols };
             let max_rows = area.height.saturating_sub(3);
 
-            // Apply import fit mode.
+            // Apply import fit mode + scale.
             let (view_cols, view_rows) = if import_active {
+                let scale = app.import_scale as f32 / 100.0;
+                let scaled_cols = (max_cols as f32 * scale).round().max(1.0) as u16;
+                let scaled_rows = (max_rows as f32 * scale).round().max(1.0) as u16;
                 let cell_aspect = 2.0f32;
                 let img_aspect = *w as f32 / *h as f32;
                 match app.import_fit {
                     ImportFit::Width => {
-                        let vc = max_cols;
+                        let vc = scaled_cols;
                         let vr = (vc as f32 / img_aspect / cell_aspect).round().max(1.0) as u16;
-                        (vc, vr.min(max_rows))
+                        (vc, vr.min(scaled_rows))
                     }
                     ImportFit::Height => {
-                        let vr = max_rows;
+                        let vr = scaled_rows;
                         let vc = (vr as f32 * img_aspect * cell_aspect).round().max(1.0) as u16;
-                        (vc.min(max_cols), vr)
+                        (vc.min(scaled_cols), vr)
                     }
                     ImportFit::Fill => {
-                        (max_cols, max_rows)
+                        (scaled_cols, scaled_rows)
                     }
                 }
             } else {
@@ -2125,7 +2162,35 @@ fn run_main_loop(
                     // Single video panel.
                     match ascii_ref {
                         Some(grid) => {
-                            let lines = ascii_to_lines(grid);
+                            let mut lines = ascii_to_lines(grid);
+
+                            // Center the grid if in import mode and smaller than video area.
+                            if import_active {
+                                let inner_h = video_area.height.saturating_sub(2) as usize;
+                                let inner_w = video_area.width.saturating_sub(2) as usize;
+                                let grid_h = lines.len();
+                                let grid_w = grid.first().map(|r| r.len()).unwrap_or(0);
+
+                                // Horizontal centering: prepend spaces to each line.
+                                if grid_w < inner_w {
+                                    let pad_left = (inner_w - grid_w) / 2;
+                                    let prefix = " ".repeat(pad_left);
+                                    lines = lines.into_iter().map(|line| {
+                                        let mut spans = vec![Span::raw(prefix.clone())];
+                                        spans.extend(line.spans);
+                                        Line::from(spans)
+                                    }).collect();
+                                }
+
+                                // Vertical centering: prepend empty lines.
+                                if grid_h < inner_h {
+                                    let pad_top = (inner_h - grid_h) / 2;
+                                    let mut padded = vec![Line::from(""); pad_top];
+                                    padded.append(&mut lines);
+                                    lines = padded;
+                                }
+                            }
+
                             let (menu_left, menu_right) = build_menu_title(open_panel, current_style, fps, app.show_help);
                             let p = Paragraph::new(lines).block(
                                 Block::default()
@@ -2623,7 +2688,9 @@ fn render_settings_panel(
                 }
                 SettingsItem::Mirror => (if mirror_on { "ON".into() } else { "OFF".into() }, false),
                 SettingsItem::Brightness => (format!("◀ {} ▶", brightness), false),
+                SettingsItem::Contrast => (format!("◀ {:.1} ▶", app.config.gamma), false),
                 SettingsItem::ImportFit => (format!("◀ {} ▶", app.import_fit.label()), false),
+                SettingsItem::ImportScale => (format!("◀ {}% ▶", app.import_scale), false),
                 SettingsItem::ImportRotate => (format!("◀ {}° ▶", app.import_rotation), false),
                 SettingsItem::ImportFlip => (if app.import_mirror { "ON".into() } else { "OFF".into() }, false),
             };
