@@ -5,11 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>txxxt — terminal video call</title>
 <style>
+  :root {
+    --alabaster: #d8dbe2;
+    --powder: #a9bcd0;
+    --pacific: #58a4b0;
+    --charcoal: #373f51;
+    --carbon: #1b1b1e;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
-    background: #0a0a0a;
-    color: #e0e0e0;
+    background: var(--carbon);
+    color: var(--alabaster);
     min-height: 100vh;
     display: flex;
     justify-content: center;
@@ -20,31 +27,31 @@
     width: 100%;
     padding: 2rem;
   }
-  h1 { font-size: 2rem; color: #fff; margin-bottom: 0.5rem; }
-  .subtitle { color: #888; margin-bottom: 2rem; }
+  h1 { font-size: 2rem; color: var(--alabaster); margin-bottom: 0.5rem; }
+  .subtitle { color: var(--powder); margin-bottom: 2rem; }
   .code-box {
-    background: #1a1a2e;
-    border: 1px solid #333;
+    background: var(--charcoal);
+    border: 1px solid var(--charcoal);
     border-radius: 8px;
     padding: 1.5rem;
     text-align: center;
     margin-bottom: 2rem;
   }
-  .code-label { color: #888; font-size: 0.85rem; margin-bottom: 0.5rem; }
-  .code { font-size: 3rem; font-weight: bold; color: #00ff88; letter-spacing: 0.3em; }
+  .code-label { color: var(--powder); font-size: 0.85rem; margin-bottom: 0.5rem; }
+  .code { font-size: 3rem; font-weight: bold; color: var(--pacific); letter-spacing: 0.3em; }
   .steps {
-    background: #111;
-    border: 1px solid #222;
+    background: var(--carbon);
+    border: 1px solid var(--charcoal);
     border-radius: 8px;
     padding: 1.5rem;
   }
-  .steps h2 { font-size: 0.9rem; color: #888; margin-bottom: 1rem; }
+  .steps h2 { font-size: 0.9rem; color: var(--powder); margin-bottom: 1rem; }
   .step { margin-bottom: 1rem; }
   .step:last-child { margin-bottom: 0; }
-  .step-label { color: #666; font-size: 0.8rem; margin-bottom: 0.3rem; }
+  .step-label { color: var(--powder); font-size: 0.8rem; margin-bottom: 0.3rem; }
   .cmd {
-    background: #0a0a0a;
-    border: 1px solid #333;
+    background: var(--carbon);
+    border: 1px solid var(--charcoal);
     border-radius: 4px;
     padding: 0.6rem 0.8rem;
     display: flex;
@@ -56,8 +63,8 @@
     white-space: nowrap;
     overflow-x: auto;
   }
-  .cmd:hover { border-color: #00ff88; }
-  .cmd code { color: #00ff88; font-size: 0.85rem; flex: 1; min-width: 0; overflow-x: auto; }
+  .cmd:hover { border-color: var(--pacific); }
+  .cmd code { color: var(--pacific); font-size: 0.85rem; flex: 1; min-width: 0; overflow-x: auto; }
   .copy-btn {
     flex-shrink: 0;
     width: 16px;
@@ -67,37 +74,46 @@
     user-select: none;
   }
   .cmd:hover .copy-btn { opacity: 0.6; }
+  .ascii-logo {
+    font-family: 'Courier New', monospace;
+    font-size: 3px;
+    line-height: 1.1;
+    white-space: pre;
+    overflow: hidden;
+    margin: 0 auto 1.5rem;
+    max-width: 100%;
+  }
   .no-code { text-align: center; }
-  .no-code h2 { font-size: 1.5rem; color: #fff; margin-bottom: 1rem; }
-  .no-code p { color: #888; margin-bottom: 1rem; line-height: 1.6; }
+  .no-code h2 { font-size: 1.5rem; color: var(--pacific); margin-bottom: 1rem; }
+  .no-code p { color: var(--powder); margin-bottom: 1rem; line-height: 1.6; }
   .links { margin-top: 1.5rem; font-size: 0.8rem; text-align: center; }
-  .links a { color: #666; text-decoration: none; transition: color 0.2s; }
-  .links a:hover { color: #00ff88; }
-  .links span { color: #333; margin: 0 0.5rem; }
+  .links a { color: var(--powder); text-decoration: none; transition: color 0.2s; }
+  .links a:hover { color: var(--pacific); }
+  .links span { color: var(--charcoal); margin: 0 0.5rem; }
   .plus-features { margin-bottom: 2rem; }
   .feature {
     display: flex;
     align-items: flex-start;
     gap: 1rem;
     padding: 1rem 0;
-    border-bottom: 1px solid #1a1a1a;
+    border-bottom: 1px solid var(--charcoal);
   }
   .feature:last-child { border-bottom: none; }
   .feature-icon { font-size: 1.3rem; flex-shrink: 0; margin-top: 0.1rem; }
-  .feature-title { color: #fff; font-size: 0.95rem; margin-bottom: 0.3rem; }
-  .feature-desc { color: #888; font-size: 0.8rem; line-height: 1.5; }
+  .feature-title { color: var(--alabaster); font-size: 0.95rem; margin-bottom: 0.3rem; }
+  .feature-desc { color: var(--powder); font-size: 0.8rem; line-height: 1.5; }
   .plus-price {
-    background: #1a1a2e;
-    border: 1px solid #333;
+    background: var(--charcoal);
+    border: 1px solid var(--charcoal);
     border-radius: 8px;
     padding: 1.5rem;
     text-align: center;
   }
-  .price-tag { font-size: 1.8rem; font-weight: bold; color: #fff; margin-bottom: 1rem; }
+  .price-tag { font-size: 1.8rem; font-weight: bold; color: var(--alabaster); margin-bottom: 1rem; }
   .buy-btn {
     display: inline-block;
-    background: #00ff88;
-    color: #0a0a0a;
+    background: var(--pacific);
+    color: var(--carbon);
     font-family: inherit;
     font-size: 0.95rem;
     font-weight: bold;
@@ -146,13 +162,13 @@
   <!-- Landing page -->
   <div id="landing-page" style="display:none">
     <div class="no-code">
-      <h2>txxxt</h2>
+<h2>txxxt</h2>
       <p>ascii webcam viewer &amp; video call<br>in your terminal</p>
       <div class="cmd" id="landing-cmd">
         <code id="landing-cmd-text"></code>
         <svg class="copy-btn" id="landing-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
       </div>
-      <p style="color:#666;font-size:0.8rem;margin-top:1rem;">then run: txxxt</p>
+      <p style="color:var(--powder);font-size:0.8rem;margin-top:1rem;">then run: txxxt</p>
       <div class="links">
         <a href="https://github.com/namil-k/txxxt">GitHub</a>
         <span>·</span>
@@ -165,7 +181,7 @@
 
   <!-- Plus page -->
   <div id="plus-page" style="display:none">
-    <h1>txxxt<span style="color:#00ff88">+</span></h1>
+    <h1>txxxt<span style="color:var(--pacific)">+</span></h1>
     <p class="subtitle">advanced features for txxxt</p>
 
     <div class="plus-features">
@@ -187,7 +203,7 @@
 
     <div class="plus-price">
       <a href="https://txxxt.lemonsqueezy.com/checkout/buy/eb3b7fbb-f850-4a9a-969f-7b9d2ed33503" class="buy-btn">Get txxxt+</a>
-      <div style="color:#666;font-size:0.8rem;margin-top:0.8rem;">one-time payment · no subscription</div>
+      <div style="color:var(--powder);font-size:0.8rem;margin-top:0.8rem;">one-time payment · no subscription</div>
     </div>
 
     <div class="steps" style="margin-top:1.5rem;">
@@ -238,7 +254,7 @@ function copyAndFlash(text, iconId) {
   var el = document.getElementById(iconId);
   el.innerHTML = CHECK_SVG;
   el.style.opacity = '1';
-  el.style.stroke = '#00ff88';
+  el.style.stroke = 'var(--pacific)';
   setTimeout(function() {
     el.innerHTML = COPY_SVG;
     el.style.opacity = '';

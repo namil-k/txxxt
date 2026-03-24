@@ -86,6 +86,42 @@ enum SettingsItem {
     Contour,
     Mirror,
     Brightness,
+    // Import-only items:
+    ImportFit,
+    ImportRotate,
+    ImportFlip,
+}
+
+/// How imported images are fitted to the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportFit {
+    Width,
+    Height,
+    Fill,
+}
+
+impl ImportFit {
+    fn label(self) -> &'static str {
+        match self {
+            ImportFit::Width => "width",
+            ImportFit::Height => "height",
+            ImportFit::Fill => "fill",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            ImportFit::Width => ImportFit::Height,
+            ImportFit::Height => ImportFit::Fill,
+            ImportFit::Fill => ImportFit::Width,
+        }
+    }
+    fn prev(self) -> Self {
+        match self {
+            ImportFit::Width => ImportFit::Fill,
+            ImportFit::Height => ImportFit::Width,
+            ImportFit::Fill => ImportFit::Height,
+        }
+    }
 }
 
 impl SettingsItem {
@@ -97,6 +133,16 @@ impl SettingsItem {
         SettingsItem::Brightness,
     ];
 
+    const ALL_WITH_IMPORT: &'static [SettingsItem] = &[
+        SettingsItem::Color,
+        SettingsItem::Background,
+        SettingsItem::Contour,
+        SettingsItem::Brightness,
+        SettingsItem::ImportFit,
+        SettingsItem::ImportRotate,
+        SettingsItem::ImportFlip,
+    ];
+
     fn label(self) -> &'static str {
         match self {
             SettingsItem::Color => "color",
@@ -104,6 +150,9 @@ impl SettingsItem {
             SettingsItem::Contour => "contour",
             SettingsItem::Mirror => "mirror",
             SettingsItem::Brightness => "bright threshold",
+            SettingsItem::ImportFit => "fit",
+            SettingsItem::ImportRotate => "rotate",
+            SettingsItem::ImportFlip => "flip",
         }
     }
 }
@@ -309,6 +358,8 @@ pub struct App {
     import_mirror: bool,
     /// Import-specific rotation (0, 90, 180, 270 degrees clockwise).
     import_rotation: u16,
+    /// Import fit mode.
+    import_fit: ImportFit,
     /// Current directory in file browser.
     import_path: std::path::PathBuf,
     /// Directory entries (name, is_dir) for file browser.
@@ -386,6 +437,7 @@ impl App {
             imported_image: None,
             import_mirror: false,
             import_rotation: 0,
+            import_fit: ImportFit::Width,
             import_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
             import_entries: Vec::new(),
             import_selected: 0,
@@ -816,7 +868,9 @@ impl App {
                 }
             }
             Panel::Settings => {
-                let count = SettingsItem::ALL.len();
+                let in_import = self.imported_image.is_some();
+                let items: &[SettingsItem] = if in_import { SettingsItem::ALL_WITH_IMPORT } else { SettingsItem::ALL };
+                let count = items.len();
                 match key.code {
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.panel_cursor = self.panel_cursor.saturating_sub(1);
@@ -827,7 +881,7 @@ impl App {
                         }
                     }
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') | KeyCode::Enter => {
-                        let item = SettingsItem::ALL[self.panel_cursor];
+                        let item = items[self.panel_cursor];
                         let is_right = matches!(key.code, KeyCode::Right | KeyCode::Char('l'));
                         match item {
                             SettingsItem::Color => {
@@ -863,6 +917,19 @@ impl App {
                                     self.config.brightness_threshold =
                                         self.config.brightness_threshold.saturating_sub(5);
                                 }
+                            }
+                            SettingsItem::ImportFit => {
+                                self.import_fit = if is_right { self.import_fit.next() } else { self.import_fit.prev() };
+                            }
+                            SettingsItem::ImportRotate => {
+                                if is_right {
+                                    self.import_rotation = (self.import_rotation + 90) % 360;
+                                } else {
+                                    self.import_rotation = (self.import_rotation + 270) % 360;
+                                }
+                            }
+                            SettingsItem::ImportFlip => {
+                                self.import_mirror = !self.import_mirror;
                             }
                         }
                     }
@@ -1457,6 +1524,7 @@ impl App {
                 self.imported_image = Some((rgb.into_raw(), w, h));
                 self.import_mirror = false;
                 self.import_rotation = 0;
+                self.import_fit = ImportFit::Width;
                 self.panel = None;
                 self.flash_message = Some((format!("imported: {}", path.file_name().unwrap_or_default().to_string_lossy()), Instant::now()));
             }
@@ -1467,7 +1535,7 @@ impl App {
     }
 
     /// Read EXIF orientation and apply rotation/flip.
-    fn apply_exif_orientation(path: &std::path::Path, img: image::DynamicImage) -> image::DynamicImage {
+    pub fn apply_exif_orientation(path: &std::path::Path, img: image::DynamicImage) -> image::DynamicImage {
         let orientation = (|| -> Option<u32> {
             let file = std::fs::File::open(path).ok()?;
             let mut buf = std::io::BufReader::new(file);
@@ -1872,8 +1940,31 @@ fn run_main_loop(
         let ascii_grid: Option<Vec<Vec<AsciiCell>>> = if let Ok((rgb, w, h)) = &frame_data {
             let area = terminal.size()?;
             let raw_cols = area.width.saturating_sub(2);
-            let view_cols = if app.config.mode == RenderMode::Normal && app.config.charset.is_wide() { raw_cols / 2 } else { raw_cols };
-            let view_rows = area.height.saturating_sub(3);
+            let max_cols = if app.config.mode == RenderMode::Normal && app.config.charset.is_wide() { raw_cols / 2 } else { raw_cols };
+            let max_rows = area.height.saturating_sub(3);
+
+            // Apply import fit mode.
+            let (view_cols, view_rows) = if import_active {
+                let cell_aspect = 2.0f32;
+                let img_aspect = *w as f32 / *h as f32;
+                match app.import_fit {
+                    ImportFit::Width => {
+                        let vc = max_cols;
+                        let vr = (vc as f32 / img_aspect / cell_aspect).round().max(1.0) as u16;
+                        (vc, vr.min(max_rows))
+                    }
+                    ImportFit::Height => {
+                        let vr = max_rows;
+                        let vc = (vr as f32 * img_aspect * cell_aspect).round().max(1.0) as u16;
+                        (vc.min(max_cols), vr)
+                    }
+                    ImportFit::Fill => {
+                        (max_cols, max_rows)
+                    }
+                }
+            } else {
+                (max_cols, max_rows)
+            };
             let fg_mask: Option<&[bool]> = fg_mask_buf.as_deref();
             // Import mode: mirror is handled by import_mirror, not config.mirror.
             let saved_mirror = app.config.mirror;
@@ -2375,6 +2466,19 @@ fn build_menu_title(open_panel: Option<Panel>, current_style: VisualStyle, fps: 
     (left, right)
 }
 
+/// Clamp panel rect to fit within the view area.
+fn clamp_panel_rect(view_area: Rect, x: u16, y: u16, w: u16, h: u16) -> Rect {
+    let max_x = view_area.x + view_area.width;
+    let clamped_x = if x + w > max_x {
+        max_x.saturating_sub(w).max(view_area.x)
+    } else {
+        x
+    };
+    let clamped_w = w.min(view_area.width);
+    let clamped_h = h.min(view_area.height.saturating_sub(y.saturating_sub(view_area.y)));
+    Rect::new(clamped_x, y, clamped_w, clamped_h)
+}
+
 /// Calculate the x offset for a menu item's dropdown panel.
 /// Accounts for border (1 char) + menu item positions.
 fn menu_item_x(panel: Panel) -> u16 {
@@ -2430,7 +2534,7 @@ fn render_panels(
             render_style_picker(f, area, panel_cursor, current_style);
         }
         Some(Panel::Settings) => {
-            render_settings_panel(f, area, panel_cursor, color_on, bg_mode, app.config.contour, mirror_on, brightness);
+            render_settings_panel(f, area, panel_cursor, color_on, bg_mode, app.config.contour, mirror_on, brightness, app);
         }
         Some(Panel::Preference) => {
             render_preference_panel(f, area, panel_cursor, pref_editing, pref_input, pref_save_dir, pref_dir_entries, pref_dir_cursor);
@@ -2496,11 +2600,14 @@ fn render_settings_panel(
     contour_on: bool,
     mirror_on: bool,
     brightness: u8,
+    app: &App,
 ) {
     let model_available = crate::segmentation::default_model_path().exists();
+    let in_import = app.imported_image.is_some();
+    let items_list: &[SettingsItem] = if in_import { SettingsItem::ALL_WITH_IMPORT } else { SettingsItem::ALL };
 
     // Build row strings first, then derive panel width from content.
-    let rows: Vec<(String, bool)> = SettingsItem::ALL
+    let rows: Vec<(String, bool)> = items_list
         .iter()
         .map(|&item| {
             let (value, dimmed) = match item {
@@ -2516,44 +2623,59 @@ fn render_settings_panel(
                 }
                 SettingsItem::Mirror => (if mirror_on { "ON".into() } else { "OFF".into() }, false),
                 SettingsItem::Brightness => (format!("◀ {} ▶", brightness), false),
+                SettingsItem::ImportFit => (format!("◀ {} ▶", app.import_fit.label()), false),
+                SettingsItem::ImportRotate => (format!("◀ {}° ▶", app.import_rotation), false),
+                SettingsItem::ImportFlip => (if app.import_mirror { "ON".into() } else { "OFF".into() }, false),
             };
             (format!(" {}  {} ", item.label(), value), dimmed)
         })
         .collect();
 
-    // Add Person (pro) row if not already in Person mode.
-    // We show it as a separate hint below the cycling value.
-
     let max_row_len = rows.iter().map(|(r, _)| r.len()).max().unwrap_or(10);
-    // +2 for border left/right, min 14 to fit " settings " title
-    let panel_w = (max_row_len as u16 + 4).max(16); // +4 for padding inside border
-    let panel_h = SettingsItem::ALL.len() as u16 + 2;
+    let raw_panel_w = (max_row_len as u16 + 4).max(16);
+    let separator_row = if in_import { 1u16 } else { 0 };
+    let panel_h = items_list.len() as u16 + 2 + separator_row;
     let x = view_area.x + menu_item_x(Panel::Settings);
     let y = view_area.y + 1;
-    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+    let panel_rect = clamp_panel_rect(view_area, x, y, raw_panel_w, panel_h);
 
     f.render_widget(Clear, panel_rect);
 
-    let inner_w = panel_w.saturating_sub(2) as usize; // content width inside border
-    let items: Vec<Line<'static>> = rows
-        .into_iter()
-        .enumerate()
-        .map(|(i, (row, dimmed))| {
-            // Pad to fill inner width
-            let padded = format!("{:<width$}", row, width = inner_w);
+    let inner_w = panel_rect.width.saturating_sub(2) as usize; // content width inside border
+    // Find where import items start (for separator).
+    let import_start = if in_import {
+        items_list.iter().position(|i| matches!(i, SettingsItem::ImportFit))
+    } else {
+        None
+    };
 
-            let style = if i == cursor {
-                Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
-            } else if dimmed {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            Line::styled(padded, style)
-        })
-        .collect();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, (row, dimmed)) in rows.into_iter().enumerate() {
+        // Insert separator before import items.
+        if Some(i) == import_start {
+            let sep = format!("{:─<width$}", "── import ", width = inner_w);
+            lines.push(Line::styled(sep, Style::default().fg(Color::DarkGray)));
+        }
 
-    let panel = Paragraph::new(items).block(
+        let padded = format!("{:<width$}", row, width = inner_w);
+        // Adjust cursor index past separator.
+        let display_cursor = if let Some(sep_idx) = import_start {
+            if cursor >= sep_idx { cursor } else { cursor }
+        } else {
+            cursor
+        };
+
+        let style = if i == display_cursor {
+            Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
+        } else if dimmed {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::styled(padded, style));
+    }
+
+    let panel = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -2667,7 +2789,7 @@ fn render_connect_panel(f: &mut ratatui::Frame, view_area: Rect, input: &str) {
     let panel_h: u16 = 3;
     let x = view_area.x + menu_item_x(Panel::Connect);
     let y = view_area.y + 1;
-    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+    let panel_rect = clamp_panel_rect(view_area, x, y, panel_w, panel_h);
 
     f.render_widget(Clear, panel_rect);
 
@@ -2788,7 +2910,7 @@ fn render_account_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let panel_h: u16 = if logged_in.is_some() { 6 } else { 12 };
     let x = area.x + menu_item_x(Panel::Account);
     let y = area.y + 1;
-    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+    let panel_rect = clamp_panel_rect(area, x, y, panel_w, panel_h);
     f.render_widget(Clear, panel_rect);
 
     if let Some((username, _)) = logged_in {
@@ -2840,7 +2962,7 @@ fn render_friends_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let panel_w: u16 = 32;
     let x = area.x + menu_item_x(Panel::Friends);
     let y = area.y + 1;
-    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+    let panel_rect = clamp_panel_rect(area, x, y, panel_w, panel_h);
     f.render_widget(Clear, panel_rect);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -2894,7 +3016,7 @@ fn render_import_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let panel_h: u16 = (visible_rows as u16 + 3).min(area.height.saturating_sub(2)); // header + items + border
     let x = area.x + menu_item_x(Panel::Import);
     let y = area.y + 1;
-    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+    let panel_rect = clamp_panel_rect(area, x, y, panel_w, panel_h);
     f.render_widget(Clear, panel_rect);
 
     let dir_display = app.import_path.to_string_lossy().to_string();

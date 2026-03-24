@@ -48,6 +48,41 @@ enum Commands {
         #[command(subcommand)]
         action: FriendsAction,
     },
+    /// Convert an image to ASCII art
+    Convert {
+        /// Path to image file (png, jpg, webp, etc.)
+        file: String,
+
+        /// Visual style
+        #[arg(short, long, default_value = "standard",
+              value_parser = ["standard", "letters", "dots", "digits", "blocks",
+                              "hangul", "hiragana", "katakana", "hanja"])]
+        style: String,
+
+        /// Output file (html, txt, or ansi). Prints to terminal if omitted.
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Width in columns (default: terminal width)
+        #[arg(short, long)]
+        width: Option<u16>,
+
+        /// Enable color output
+        #[arg(short, long)]
+        color: bool,
+
+        /// Rotate image (0, 90, 180, 270)
+        #[arg(long, default_value = "0")]
+        rotate: u16,
+
+        /// Mirror (flip horizontally)
+        #[arg(long)]
+        mirror: bool,
+
+        /// Enable background removal (requires txxxt+)
+        #[arg(long)]
+        bg: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -82,6 +117,9 @@ fn main() -> Result<()> {
         }
         Some(Commands::Friends { action }) => {
             return cmd_friends(action);
+        }
+        Some(Commands::Convert { file, style, output, width, color, rotate, mirror, bg }) => {
+            return cmd_convert(file, style, output, width, color, rotate, mirror, bg);
         }
         _ => {}
     }
@@ -325,6 +363,119 @@ fn cmd_friends(action: &FriendsAction) -> Result<()> {
             println!("removed @{}", username);
         }
     }
+    Ok(())
+}
+
+fn cmd_convert(
+    file: &str, style: &str, output: &Option<String>, width: &Option<u16>,
+    color: &bool, rotate: &u16, mirror: &bool, bg: &bool,
+) -> Result<()> {
+    use render::{render_frame, RenderConfig, RenderMode, BgMode};
+    use charsets::CharsetName;
+
+    // Load image.
+    let path = std::path::Path::new(file);
+    if !path.exists() {
+        anyhow::bail!("file not found: {}", file);
+    }
+    let img = image::open(path)?;
+
+    // Apply EXIF orientation.
+    let img = tui::App::apply_exif_orientation(path, img);
+
+    // Apply rotation.
+    let img = match rotate {
+        90 => img.rotate90(),
+        180 => img.rotate180(),
+        270 => img.rotate270(),
+        _ => img,
+    };
+
+    // Apply mirror.
+    let img = if *mirror { img.fliph() } else { img };
+
+    let rgb_img = img.to_rgb8();
+    let (w, h) = rgb_img.dimensions();
+    let rgb = rgb_img.into_raw();
+
+    // Parse charset.
+    let charset = match style {
+        "standard" => CharsetName::Standard,
+        "letters" => CharsetName::Letters,
+        "dots" => CharsetName::Dots,
+        "digits" => CharsetName::Digits,
+        "blocks" => CharsetName::Blocks,
+        "hangul" => CharsetName::Hangul,
+        "hiragana" => CharsetName::Hiragana,
+        "katakana" => CharsetName::Katakana,
+        "hanja" => CharsetName::Hanja,
+        _ => anyhow::bail!("unknown style: {}", style),
+    };
+
+    // Determine output width.
+    let cols = width.unwrap_or_else(|| {
+        crossterm::terminal::size().map(|(c, _)| c).unwrap_or(120)
+    });
+    let view_cols = if charset.is_wide() { cols / 2 } else { cols };
+
+    // Calculate rows from aspect ratio.
+    let cell_aspect = 2.0f32;
+    let img_aspect = w as f32 / h as f32;
+    let view_rows = (view_cols as f32 / img_aspect / cell_aspect).round() as u16;
+
+    let config = RenderConfig {
+        mode: RenderMode::Normal,
+        charset,
+        color: *color,
+        brightness_threshold: 85,
+        bg_mode: if *bg { BgMode::Person } else { BgMode::Off },
+        mirror: false,
+        contour: false,
+    };
+
+    // Background removal.
+    let fg_mask: Option<Vec<bool>> = if *bg {
+        let model_path = segmentation::default_model_path();
+        if !model_path.exists() {
+            anyhow::bail!("segmentation model not found. run txxxt first to download it.");
+        }
+        let seg = segmentation::Segmenter::new(&model_path)?;
+        seg.send_frame(&rgb, w, h);
+        // Wait for mask.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        seg.try_recv_mask()
+    } else {
+        None
+    };
+
+    let grid = render_frame(&rgb, w, h, view_cols, view_rows, &config, fg_mask.as_deref());
+
+    // Output.
+    match output {
+        Some(out_path) => {
+            let content = if out_path.ends_with(".html") {
+                export::grid_to_html(&grid)
+            } else if out_path.ends_with(".txt") {
+                export::grid_to_text(&grid)
+            } else if out_path.ends_with(".ansi") {
+                export::grid_to_ansi(&grid)
+            } else {
+                // Default to HTML.
+                export::grid_to_html(&grid)
+            };
+            std::fs::write(out_path, content)?;
+            println!("saved: {}", out_path);
+        }
+        None => {
+            // Print to terminal.
+            if *color {
+                print!("{}", export::grid_to_ansi(&grid));
+            } else {
+                print!("{}", export::grid_to_text(&grid));
+            }
+        }
+    }
+
     Ok(())
 }
 
