@@ -54,11 +54,15 @@ AI-powered body segmentation removes the background in real time. Works with any
 
 ## Install
 
-```bash
-# Cargo (Rust)
-cargo install txxxt
+**Cargo (Rust):**
 
-# or install script (macOS ARM64, Linux x86_64)
+```bash
+cargo install txxxt
+```
+
+**Install script (macOS ARM64, Linux x86_64):**
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/main/install.sh | bash
 ```
 
