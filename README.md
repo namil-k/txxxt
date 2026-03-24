@@ -42,15 +42,17 @@ Turn your webcam into real-time ASCII art. Call your friends — right from your
 
 AI-powered body segmentation removes the background in real time. Works with any visual style.
 
-## Quick Start
+## Install
 
 ```bash
-# Install
-curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/main/install.sh | bash
+# Cargo (Rust)
+cargo install txxxt
 
-# Run
-txxxt
+# or install script (macOS ARM64, Linux x86_64)
+curl -fsSL https://raw.githubusercontent.com/namil-k/txxxt/main/install.sh | bash
 ```
+
+Then run: `txxxt`
 
 ## Features
 

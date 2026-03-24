@@ -168,6 +168,10 @@
         <code id="landing-cmd-text"></code>
         <svg class="copy-btn" id="landing-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
       </div>
+      <div class="cmd" id="cargo-cmd" style="margin-top:0.5rem">
+        <code style="color:var(--pacific);font-size:0.85rem">cargo install txxxt</code>
+        <svg class="copy-btn" id="cargo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+      </div>
       <p style="color:var(--powder);font-size:0.8rem;margin-top:1rem;">then run: txxxt</p>
       <div class="links">
         <a href="https://github.com/namil-k/txxxt">GitHub</a>
@@ -244,6 +248,7 @@ if (path.toLowerCase() === 'plus') {
   document.getElementById('landing-page').style.display = 'block';
   document.getElementById('landing-cmd-text').textContent = INSTALL_CMD;
   document.getElementById('landing-cmd').onclick = function() { copyAndFlash(INSTALL_CMD, 'landing-icon'); };
+  document.getElementById('cargo-cmd').onclick = function() { copyAndFlash('cargo install txxxt', 'cargo-icon'); };
 }
 
 var COPY_SVG = '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>';
