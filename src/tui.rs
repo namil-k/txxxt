@@ -28,6 +28,7 @@ pub enum Panel {
     Connect,
     Account,
     Friends,
+    Import,
 }
 
 /// App mode: local viewer or in-call.
@@ -301,6 +302,19 @@ pub struct App {
     friends_status: Option<String>,
     /// Whether the help overlay is visible (independent of panel).
     show_help: bool,
+    // ── Import panel ──
+    /// Imported image data: original (RGB bytes, width, height). When Some, replaces webcam.
+    imported_image: Option<(Vec<u8>, u32, u32)>,
+    /// Import-specific mirror (independent of webcam mirror).
+    import_mirror: bool,
+    /// Import-specific rotation (0, 90, 180, 270 degrees clockwise).
+    import_rotation: u16,
+    /// Current directory in file browser.
+    import_path: std::path::PathBuf,
+    /// Directory entries (name, is_dir) for file browser.
+    import_entries: Vec<(String, bool)>,
+    /// Cursor position in import file browser.
+    import_selected: usize,
 }
 
 /// A directory entry for the preference file picker.
@@ -369,6 +383,12 @@ impl App {
             friends_add_input: String::new(),
             friends_status: None,
             show_help: false,
+            imported_image: None,
+            import_mirror: false,
+            import_rotation: 0,
+            import_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
+            import_entries: Vec::new(),
+            import_selected: 0,
         }
     }
 
@@ -729,7 +749,27 @@ impl App {
                     }
                     return (true, None);
                 }
-                KeyCode::Char('3') => {
+                KeyCode::Char('i') | KeyCode::Char('3') if panel == Panel::Import => {
+                    self.panel = None;
+                    return (true, None);
+                }
+                KeyCode::Char('i') | KeyCode::Char('3') if panel != Panel::Import => {
+                    self.import_list_dir();
+                    self.panel = Some(Panel::Import);
+                    self.panel_cursor = 0;
+                    return (true, None);
+                }
+                KeyCode::Char('f') if panel == Panel::Friends => {
+                    self.panel = None;
+                    return (true, None);
+                }
+                KeyCode::Char('f') if panel != Panel::Friends => {
+                    if crate::config::get_account().is_some() {
+                        self.open_friends_panel();
+                    }
+                    return (true, None);
+                }
+                KeyCode::Char('4') => {
                     if crate::config::get_account().is_some() {
                         if panel == Panel::Friends { self.panel = None; } else { self.open_friends_panel(); }
                     } else {
@@ -745,7 +785,7 @@ impl App {
                     self.open_account_panel();
                     return (true, None);
                 }
-                KeyCode::Char('4') => {
+                KeyCode::Char('5') => {
                     if crate::config::get_account().is_some() {
                         if panel == Panel::Account { self.panel = None; } else { self.open_account_panel(); }
                     }
@@ -1144,6 +1184,38 @@ impl App {
                     }
                 }
             }
+            Panel::Import => {
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.import_selected = self.import_selected.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if !self.import_entries.is_empty() && self.import_selected + 1 < self.import_entries.len() {
+                            self.import_selected += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some((name, is_dir)) = self.import_entries.get(self.import_selected).cloned() {
+                            if name == ".." {
+                                if let Some(parent) = self.import_path.parent().map(|p| p.to_path_buf()) {
+                                    self.import_path = parent;
+                                    self.import_list_dir();
+                                }
+                            } else if is_dir {
+                                self.import_path.push(&name);
+                                self.import_list_dir();
+                            } else {
+                                let full_path = self.import_path.join(&name);
+                                self.import_load_image(&full_path);
+                            }
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('i') => {
+                        self.panel = None;
+                    }
+                    _ => return (false, None),
+                }
+            }
         }
         (true, None)
     }
@@ -1168,6 +1240,23 @@ impl App {
             }
         }
 
+        // Import mode: rotate (r) and mirror (m) keys.
+        if self.imported_image.is_some() && self.panel.is_none() {
+            match key.code {
+                KeyCode::Char('r') => {
+                    self.import_rotation = (self.import_rotation + 90) % 360;
+                    self.flash(format!("rotate: {}°", self.import_rotation));
+                    return None;
+                }
+                KeyCode::Char('m') => {
+                    self.import_mirror = !self.import_mirror;
+                    self.flash(format!("mirror: {}", if self.import_mirror { "on" } else { "off" }));
+                    return None;
+                }
+                _ => {}
+            }
+        }
+
         // If a panel is open, route input there first.
         let (consumed, action) = self.handle_panel_key(key);
         if consumed {
@@ -1176,6 +1265,12 @@ impl App {
 
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
+                // In import mode: return to webcam.
+                if self.imported_image.is_some() {
+                    self.imported_image = None;
+                    self.flash("back to webcam".into());
+                    return None;
+                }
                 // In call/relay mode: end call. In local mode: quit.
                 match self.mode {
                     AppMode::Call { .. }
@@ -1214,29 +1309,25 @@ impl App {
                 self.panel_cursor = 0;
                 self.pref_editing = false;
             }
-            KeyCode::Char('a') => {
-                self.open_account_panel();
-            }
-            KeyCode::Char('4') => {
-                if crate::config::get_account().is_some() {
-                    // Logged in: 4 = account
-                    self.open_account_panel();
+            KeyCode::Char('i') | KeyCode::Char('3') => {
+                if self.mode == AppMode::Local {
+                    self.import_list_dir();
+                    self.panel = Some(Panel::Import);
+                    self.panel_cursor = 0;
                 }
-                // Logged out: only 3 items, 4 does nothing.
             }
-            KeyCode::Char('f') => {
+            KeyCode::Char('f') | KeyCode::Char('4') => {
                 if crate::config::get_account().is_some() {
                     self.open_friends_panel();
+                } else if matches!(key.code, KeyCode::Char('4')) {
+                    // Logged out: 4 = account
+                    self.open_account_panel();
                 } else {
                     self.flash("login first: press [a]".into());
                 }
             }
-            KeyCode::Char('3') => {
-                if crate::config::get_account().is_some() {
-                    // Logged in: 3 = friends
-                    self.open_friends_panel();
-                } else {
-                    // Logged out: 3 = account (no friends in menu)
+            KeyCode::Char('a') | KeyCode::Char('5') => {
+                if crate::config::get_account().is_some() || matches!(key.code, KeyCode::Char('a')) {
                     self.open_account_panel();
                 }
             }
@@ -1310,6 +1401,91 @@ impl App {
         self.friends_adding = false;
         self.friends_add_input.clear();
         self.friends_status = None;
+    }
+
+    /// Load directory entries for the import file browser.
+    fn import_list_dir(&mut self) {
+        self.import_entries.clear();
+        self.import_selected = 0;
+        // Add parent directory entry.
+        if self.import_path.parent().is_some() {
+            self.import_entries.push(("..".to_string(), true));
+        }
+        if let Ok(entries) = std::fs::read_dir(&self.import_path) {
+            let mut items: Vec<(String, bool)> = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.starts_with('.') {
+                        return None;
+                    }
+                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    if is_dir {
+                        return Some((name, true));
+                    }
+                    // Filter image files only.
+                    let lower = name.to_lowercase();
+                    if lower.ends_with(".png") || lower.ends_with(".jpg")
+                        || lower.ends_with(".jpeg") || lower.ends_with(".webp")
+                        || lower.ends_with(".gif") || lower.ends_with(".bmp")
+                    {
+                        Some((name, false))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            // Sort: directories first, then files, alphabetically.
+            items.sort_by(|a, b| match (a.1, b.1) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.0.to_lowercase().cmp(&b.0.to_lowercase()),
+            });
+            self.import_entries.extend(items);
+        }
+    }
+
+    /// Load an image file and set it as the imported image.
+    /// Applies EXIF orientation automatically.
+    fn import_load_image(&mut self, path: &std::path::Path) {
+        match image::open(path) {
+            Ok(img) => {
+                // Apply EXIF orientation if available.
+                let img = Self::apply_exif_orientation(path, img);
+                let rgb = img.to_rgb8();
+                let (w, h) = rgb.dimensions();
+                self.imported_image = Some((rgb.into_raw(), w, h));
+                self.import_mirror = false;
+                self.import_rotation = 0;
+                self.panel = None;
+                self.flash_message = Some((format!("imported: {}", path.file_name().unwrap_or_default().to_string_lossy()), Instant::now()));
+            }
+            Err(e) => {
+                self.flash_message = Some((format!("failed to load: {}", e), Instant::now()));
+            }
+        }
+    }
+
+    /// Read EXIF orientation and apply rotation/flip.
+    fn apply_exif_orientation(path: &std::path::Path, img: image::DynamicImage) -> image::DynamicImage {
+        let orientation = (|| -> Option<u32> {
+            let file = std::fs::File::open(path).ok()?;
+            let mut buf = std::io::BufReader::new(file);
+            let exif = exif::Reader::new().read_from_container(&mut buf).ok()?;
+            let field = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?;
+            field.value.get_uint(0)
+        })();
+
+        match orientation.unwrap_or(1) {
+            2 => img.fliph(),
+            3 => img.rotate180(),
+            4 => img.flipv(),
+            5 => img.rotate90().fliph(),
+            6 => img.rotate90(),
+            7 => img.rotate270().fliph(),
+            8 => img.rotate270(),
+            _ => img,
+        }
     }
 
     fn refresh_friends(&mut self) {
@@ -1619,8 +1795,23 @@ fn run_main_loop(
             }
         }
 
-        // Capture camera frame.
-        let frame_data = camera.frame_rgb();
+        // Capture camera frame (or use imported image with rotation/mirror).
+        let (frame_data, import_active) = if let Some((ref rgb, w, h)) = app.imported_image {
+            let img = image::RgbImage::from_raw(w, h, rgb.clone()).unwrap();
+            let img = image::DynamicImage::ImageRgb8(img);
+            let img = match app.import_rotation {
+                90 => img.rotate90(),
+                180 => img.rotate180(),
+                270 => img.rotate270(),
+                _ => img,
+            };
+            let img = if app.import_mirror { img.fliph() } else { img };
+            let rgb_out = img.to_rgb8();
+            let (rw, rh) = rgb_out.dimensions();
+            (Ok((rgb_out.into_raw(), rw, rh)), true)
+        } else {
+            (camera.frame_rgb(), false)
+        };
 
         // Lazily init/teardown segmenter based on BgMode or contour.
         let needs_segmenter = app.config.bg_mode == crate::render::BgMode::Person || app.config.contour;
@@ -1684,7 +1875,11 @@ fn run_main_loop(
             let view_cols = if app.config.mode == RenderMode::Normal && app.config.charset.is_wide() { raw_cols / 2 } else { raw_cols };
             let view_rows = area.height.saturating_sub(3);
             let fg_mask: Option<&[bool]> = fg_mask_buf.as_deref();
+            // Import mode: mirror is handled by import_mirror, not config.mirror.
+            let saved_mirror = app.config.mirror;
+            if import_active { app.config.mirror = false; }
             let mut grid = render_frame(rgb, *w, *h, view_cols, view_rows, &app.config, fg_mask);
+            if import_active { app.config.mirror = saved_mirror; }
             // Contour overlay uses person mask (independent of bg removal).
             if app.config.contour {
                 if let Some(ref person_mask) = last_person_mask {
@@ -1726,12 +1921,13 @@ fn run_main_loop(
                         let abs = (s as f32 / 32767.0).abs();
                         if abs > peak { peak = abs; }
                     }
+                    // Feed to AEC as render (speaker) reference — must match capture rate.
+                    if let Some(ref mut ec) = app.echo_canceller {
+                        let aec_samples = crate::audio::resample(&samples, crate::audio::NET_SAMPLE_RATE, app.audio_capture_rate);
+                        ec.analyze_render(&aec_samples);
+                    }
                     // Resample from network rate to local playback rate.
                     let resampled = crate::audio::resample(&samples, crate::audio::NET_SAMPLE_RATE, app.audio_playback_rate);
-                    // Feed to AEC as render (speaker) reference.
-                    if let Some(ref mut ec) = app.echo_canceller {
-                        ec.analyze_render(&resampled);
-                    }
                     if let Some(ref tx) = app.audio_playback_tx {
                         let _ = tx.send(resampled);
                     }
@@ -1882,11 +2078,13 @@ fn run_main_loop(
                                 lines.push(Line::from(""));
                             }
                         }
+                        let (menu_left, menu_right) = build_menu_title(open_panel, current_style, fps, app.show_help);
                         let p = Paragraph::new(lines).block(
                             Block::default()
                                 .borders(Borders::ALL)
                                 .border_type(BorderType::Rounded)
-                                .title(" remote — camera off "),
+                                .title(menu_left)
+                                .title(ratatui::widgets::block::Title::from(menu_right).alignment(ratatui::layout::Alignment::Right)),
                         );
                         f.render_widget(p, video_area);
                     } else {
@@ -1896,17 +2094,22 @@ fn run_main_loop(
                                 let inner_rows = video_area.height.saturating_sub(2) as usize;
                                 let scaled = crate::net::protocol::rescale_grid(grid, inner_cols, inner_rows);
                                 let lines = ascii_to_lines(&scaled);
+                                let (menu_left, menu_right) = build_menu_title(open_panel, current_style, fps, app.show_help);
                                 let p = Paragraph::new(lines).block(
                                     Block::default()
                                         .borders(Borders::ALL)
                                         .border_type(BorderType::Rounded)
-                                        .title(format!(" {} ", peer_addr)),
+                                        .title(menu_left)
+                                        .title(ratatui::widgets::block::Title::from(menu_right).alignment(ratatui::layout::Alignment::Right)),
                                 );
                                 f.render_widget(p, video_area);
                             }
                             _ => {
+                                let (menu_left, menu_right) = build_menu_title(open_panel, current_style, fps, app.show_help);
                                 let p = Paragraph::new("Waiting for peer...")
-                                    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" remote "));
+                                    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)
+                                        .title(menu_left)
+                                        .title(ratatui::widgets::block::Title::from(menu_right).alignment(ratatui::layout::Alignment::Right)));
                                 f.render_widget(p, video_area);
                             }
                         }
@@ -1958,7 +2161,8 @@ fn run_main_loop(
                     } else {
                         match ascii_ref {
                             Some(grid) => {
-                                let inner_cols = pip_w.saturating_sub(2) as usize;
+                                let raw_inner_cols = pip_w.saturating_sub(2) as usize;
+                                let inner_cols = if app.config.mode == RenderMode::Normal && app.config.charset.is_wide() { raw_inner_cols / 2 } else { raw_inner_cols };
                                 let inner_rows = pip_h.saturating_sub(2) as usize;
                                 let scaled = crate::net::protocol::rescale_grid(grid, inner_cols, inner_rows);
                                 let lines = ascii_to_lines(&scaled);
@@ -2125,14 +2329,16 @@ fn build_menu_title(open_panel: Option<Panel>, current_style: VisualStyle, fps: 
         vec![
             (1, 'v', "isual", Panel::StylePicker),
             (2, 's', "ettings", Panel::Settings),
-            (3, 'f', "riends", Panel::Friends),
-            (4, 'a', "ccount", Panel::Account),
+            (3, 'i', "mport", Panel::Import),
+            (4, 'f', "riends", Panel::Friends),
+            (5, 'a', "ccount", Panel::Account),
         ]
     } else {
         vec![
             (1, 'v', "isual", Panel::StylePicker),
             (2, 's', "ettings", Panel::Settings),
-            (3, 'a', "ccount", Panel::Account),
+            (3, 'i', "mport", Panel::Import),
+            (4, 'a', "ccount", Panel::Account),
         ]
     };
 
@@ -2179,16 +2385,16 @@ fn menu_item_x(panel: Panel) -> u16 {
         &[
             ("isual", Panel::StylePicker),
             ("ettings", Panel::Settings),
+            ("mport", Panel::Import),
             ("riends", Panel::Friends),
             ("ccount", Panel::Account),
-            ("onnect", Panel::Connect),
         ]
     } else {
         &[
             ("isual", Panel::StylePicker),
             ("ettings", Panel::Settings),
+            ("mport", Panel::Import),
             ("ccount", Panel::Account),
-            ("onnect", Panel::Connect),
         ]
     };
     let mut x: u16 = 1; // border left
@@ -2237,6 +2443,9 @@ fn render_panels(
         }
         Some(Panel::Friends) => {
             render_friends_panel(f, area, app);
+        }
+        Some(Panel::Import) => {
+            render_import_panel(f, area, app);
         }
         None => {}
     }
@@ -2676,6 +2885,57 @@ fn render_friends_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" friends "),
     );
     f.render_widget(content, panel_rect);
+}
+
+/// Render the import file browser panel.
+fn render_import_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let panel_w: u16 = 50.min(area.width.saturating_sub(4));
+    let visible_rows = 15usize;
+    let panel_h: u16 = (visible_rows as u16 + 3).min(area.height.saturating_sub(2)); // header + items + border
+    let x = area.x + menu_item_x(Panel::Import);
+    let y = area.y + 1;
+    let panel_rect = Rect::new(x, y, panel_w, panel_h);
+    f.render_widget(Clear, panel_rect);
+
+    let dir_display = app.import_path.to_string_lossy().to_string();
+    let header_line = Line::from(vec![
+        Span::styled(" 📂 ", Style::default().fg(Color::Yellow)),
+        Span::styled(dir_display, Style::default().fg(Color::White)),
+    ]);
+
+    let mut lines: Vec<Line<'static>> = vec![header_line];
+
+    // Scroll window.
+    let total = app.import_entries.len();
+    let max_visible = (panel_h as usize).saturating_sub(3);
+    let scroll_offset = if app.import_selected >= max_visible {
+        app.import_selected - max_visible + 1
+    } else {
+        0
+    };
+
+    for (i, (name, is_dir)) in app.import_entries.iter().enumerate().skip(scroll_offset).take(max_visible) {
+        let selected = i == app.import_selected;
+        let icon = if *is_dir { "📁 " } else { "🖼  " };
+        let style = if selected {
+            Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(if *is_dir { Color::Cyan } else { Color::White })
+        };
+        lines.push(Line::from(Span::styled(format!(" {}{}", icon, name), style)));
+    }
+
+    if total == 0 {
+        lines.push(Line::from(Span::styled(" (empty)", Style::default().fg(Color::DarkGray))));
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(" import ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+    let p = Paragraph::new(lines).block(block);
+    f.render_widget(p, panel_rect);
 }
 
 /// Render the help panel overlay (centered).

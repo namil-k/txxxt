@@ -30,6 +30,7 @@ client = [
     "dep:dirs",
     "dep:ort",
     "dep:ndarray",
+    "dep:kamadak-exif",
 ]
 relay = ["dep:sqlx", "dep:tokio", "dep:uuid"]
 
@@ -47,6 +48,7 @@ nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 
 # Image processing (client only)
 image = { version = "0.25", optional = true }
+kamadak-exif = { version = "0.6", optional = true }
 
 # Clipboard (client only)
 arboard = { version = "3", optional = true }

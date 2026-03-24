@@ -1,10 +1,10 @@
 <p align="center">
-  <h1 align="center">txxxt</h1>
-  <p align="center">
-    Terminal-based video chat with ASCII art
-    <br />
-    <a href="https://txxxt.me">txxxt.me</a> · <a href="https://github.com/namil-k/txxxt/releases">Releases</a>
-  </p>
+  <img src="assets/txxxt-logo-ascii.png" width="600" alt="txxxt" />
+</p>
+<p align="center">
+  Terminal-based video chat with ASCII art
+  <br />
+  <a href="https://txxxt.me">txxxt.me</a> · <a href="https://github.com/namil-k/txxxt/releases">Releases</a>
 </p>
 
 <p align="center">

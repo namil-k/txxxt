@@ -157,13 +157,20 @@ pub struct EchoCanceller {
 impl EchoCanceller {
     /// Create a new echo canceller at the given sample rate.
     pub fn new(sample_rate: u32) -> Result<Self> {
+        use webrtc_audio_processing::config::{EchoCanceller as AEC, NoiseSuppression, NoiseSuppressionLevel, GainController, GainController2, HighPassFilter};
         use webrtc_audio_processing::Config;
 
         let processor = Processor::new(sample_rate)
             .map_err(|e| anyhow::anyhow!("AEC init error: {:?}", e))?;
 
         processor.set_config(Config {
-            echo_canceller: Some(Default::default()),
+            echo_canceller: Some(AEC::Full { stream_delay_ms: None }),
+            high_pass_filter: Some(HighPassFilter { apply_in_full_band: true }),
+            noise_suppression: Some(NoiseSuppression {
+                level: NoiseSuppressionLevel::High,
+                analyze_linear_aec_output: true,
+            }),
+            gain_controller: Some(GainController::GainController2(GainController2::default())),
             ..Default::default()
         });
 
