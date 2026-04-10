@@ -2693,6 +2693,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratatree"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7fb2be7ab36675fba700133e1bb0750a9a736700e94c0104ca4aa038019d64b"
+dependencies = [
+ "crossterm",
+ "dirs",
+ "ratatui",
+]
+
+[[package]]
 name = "ratatui"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3708,6 +3719,7 @@ dependencies = [
  "ndarray",
  "nokhwa",
  "ort",
+ "ratatree",
  "ratatui",
  "serde",
  "sqlx",

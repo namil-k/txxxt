@@ -1,6 +1,6 @@
 [package]
 name = "txxxt"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 default-run = "txxxt"
 description = "Terminal-based ASCII video call tool"
@@ -32,6 +32,7 @@ client = [
     "dep:ort",
     "dep:ndarray",
     "dep:kamadak-exif",
+    "dep:ratatree",
 ]
 relay = ["dep:sqlx", "dep:tokio", "dep:uuid"]
 
@@ -50,6 +51,9 @@ nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 # Image processing (client only)
 image = { version = "0.25", optional = true }
 kamadak-exif = { version = "0.6", optional = true }
+
+# File picker (client only)
+ratatree = { version = "0.1", optional = true }
 
 # Clipboard (client only)
 arboard = { version = "3", optional = true }

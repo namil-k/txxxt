@@ -87,6 +87,7 @@ enum SettingsItem {
     Mirror,
     Brightness,
     Contrast,
+    Trichrome,
     // Import-only items:
     ImportFit,
     ImportScale,
@@ -131,6 +132,7 @@ impl SettingsItem {
         SettingsItem::Color,
         SettingsItem::Background,
         SettingsItem::Contour,
+        SettingsItem::Trichrome,
         SettingsItem::Mirror,
         SettingsItem::Brightness,
         SettingsItem::Contrast,
@@ -156,6 +158,7 @@ impl SettingsItem {
             SettingsItem::Mirror => "mirror",
             SettingsItem::Brightness => "bright threshold",
             SettingsItem::Contrast => "contrast",
+            SettingsItem::Trichrome => "trichrome",
             SettingsItem::ImportFit => "fit",
             SettingsItem::ImportScale => "scale",
             SettingsItem::ImportRotate => "rotate",
@@ -358,6 +361,13 @@ pub struct App {
     friends_status: Option<String>,
     /// Whether the help overlay is visible (independent of panel).
     show_help: bool,
+    /// Trichrome effect: RGB channel temporal separation (txxxt+ early access).
+    /// 0 = off, 1-10 = frame delay between channels.
+    trichrome: u8,
+    /// When trichrome preview started (non-plus users get 10s preview).
+    trichrome_preview_start: Option<std::time::Instant>,
+    /// Signal to clear trichrome buffer (when bg/contour changes).
+    trichrome_clear: bool,
     // ── Import panel ──
     /// Imported image data: original (RGB bytes, width, height). When Some, replaces webcam.
     imported_image: Option<(Vec<u8>, u32, u32)>,
@@ -370,11 +380,8 @@ pub struct App {
     /// Import scale percentage (10-100).
     import_scale: u8,
     /// Current directory in file browser.
-    import_path: std::path::PathBuf,
-    /// Directory entries (name, is_dir) for file browser.
-    import_entries: Vec<(String, bool)>,
-    /// Cursor position in import file browser.
-    import_selected: usize,
+    /// File picker state (ratatree).
+    file_picker: Option<ratatree::FilePickerState>,
 }
 
 /// A directory entry for the preference file picker.
@@ -443,14 +450,15 @@ impl App {
             friends_add_input: String::new(),
             friends_status: None,
             show_help: false,
+            trichrome: 0,
+            trichrome_preview_start: None,
+            trichrome_clear: false,
             imported_image: None,
             import_mirror: false,
             import_rotation: 0,
             import_fit: ImportFit::Width,
             import_scale: 100,
-            import_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
-            import_entries: Vec::new(),
-            import_selected: 0,
+            file_picker: None,
         }
     }
 
@@ -822,10 +830,17 @@ impl App {
                 }
                 KeyCode::Char('i') | KeyCode::Char('3') if panel == Panel::Import => {
                     self.panel = None;
+                    self.file_picker = None;
                     return (true, None);
                 }
                 KeyCode::Char('i') | KeyCode::Char('3') if panel != Panel::Import => {
-                    self.import_list_dir();
+                    let start = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+                    self.file_picker = Some(
+                        ratatree::FilePickerState::builder()
+                            .start_dir(start)
+                            .mode(ratatree::PickerMode::FilesOnly)
+                            .build()
+                    );
                     self.panel = Some(Panel::Import);
                     self.panel_cursor = 0;
                     return (true, None);
@@ -916,6 +931,7 @@ impl App {
                                     self.flash("downloading segmentation model...".into());
                                     crate::segmentation::download_model_bg();
                                 }
+                                self.trichrome_clear = true;
                             }
                             SettingsItem::Contour => {
                                 if crate::segmentation::default_model_path().exists() {
@@ -924,6 +940,7 @@ impl App {
                                     self.flash("downloading segmentation model...".into());
                                     crate::segmentation::download_model_bg();
                                 }
+                                self.trichrome_clear = true;
                             }
                             SettingsItem::Mirror => {
                                 self.config.mirror = !self.config.mirror;
@@ -942,6 +959,24 @@ impl App {
                                     self.config.gamma = (self.config.gamma + 0.1).min(3.0);
                                 } else {
                                     self.config.gamma = (self.config.gamma - 0.1).max(0.3);
+                                }
+                            }
+                            SettingsItem::Trichrome => {
+                                if is_right {
+                                    self.trichrome = (self.trichrome + 1).min(10);
+                                } else {
+                                    self.trichrome = self.trichrome.saturating_sub(1);
+                                }
+                                // Auto-enable color when trichrome is on.
+                                if self.trichrome > 0 {
+                                    self.config.color = true;
+                                    // Start preview timer for non-plus users.
+                                    if !crate::config::is_plus() && self.trichrome_preview_start.is_none() {
+                                        self.trichrome_preview_start = Some(std::time::Instant::now());
+                                        self.flash("trichrome preview — 10s".into());
+                                    }
+                                } else {
+                                    self.trichrome_preview_start = None;
                                 }
                             }
                             SettingsItem::ImportFit => {
@@ -1285,35 +1320,28 @@ impl App {
                 }
             }
             Panel::Import => {
-                match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.import_selected = self.import_selected.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if !self.import_entries.is_empty() && self.import_selected + 1 < self.import_entries.len() {
-                            self.import_selected += 1;
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if let Some((name, is_dir)) = self.import_entries.get(self.import_selected).cloned() {
-                            if name == ".." {
-                                if let Some(parent) = self.import_path.parent().map(|p| p.to_path_buf()) {
-                                    self.import_path = parent;
-                                    self.import_list_dir();
-                                }
-                            } else if is_dir {
-                                self.import_path.push(&name);
-                                self.import_list_dir();
-                            } else {
-                                let full_path = self.import_path.join(&name);
-                                self.import_load_image(&full_path);
+                if let Some(ref mut picker) = self.file_picker {
+                    picker.handle_event(crossterm::event::Event::Key(key));
+                    match picker.result() {
+                        ratatree::PickerResult::Selected(paths) => {
+                            if let Some(path) = paths.first() {
+                                self.import_load_image(path);
                             }
+                            self.file_picker = None;
                         }
+                        ratatree::PickerResult::Cancelled => {
+                            self.panel = None;
+                            self.file_picker = None;
+                        }
+                        ratatree::PickerResult::Pending => {}
                     }
-                    KeyCode::Esc | KeyCode::Char('i') => {
-                        self.panel = None;
+                } else {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('i') => {
+                            self.panel = None;
+                        }
+                        _ => return (false, None),
                     }
-                    _ => return (false, None),
                 }
             }
         }
@@ -1411,7 +1439,13 @@ impl App {
             }
             KeyCode::Char('i') | KeyCode::Char('3') => {
                 if self.mode == AppMode::Local {
-                    self.import_list_dir();
+                    let start = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+                    self.file_picker = Some(
+                        ratatree::FilePickerState::builder()
+                            .start_dir(start)
+                            .mode(ratatree::PickerMode::FilesOnly)
+                            .build()
+                    );
                     self.panel = Some(Panel::Import);
                     self.panel_cursor = 0;
                 }
@@ -1432,7 +1466,11 @@ impl App {
                 }
             }
             KeyCode::Char('y') => {
-                return Some(ExportAction::Save);
+                if self.trichrome_preview_start.is_some() {
+                    self.flash("trichrome preview — press [u] to upgrade".into());
+                } else {
+                    return Some(ExportAction::Save);
+                }
             }
             KeyCode::Char('u') => {
                 if !crate::config::is_plus() {
@@ -1503,47 +1541,6 @@ impl App {
         self.friends_status = None;
     }
 
-    /// Load directory entries for the import file browser.
-    fn import_list_dir(&mut self) {
-        self.import_entries.clear();
-        self.import_selected = 0;
-        // Add parent directory entry.
-        if self.import_path.parent().is_some() {
-            self.import_entries.push(("..".to_string(), true));
-        }
-        if let Ok(entries) = std::fs::read_dir(&self.import_path) {
-            let mut items: Vec<(String, bool)> = entries
-                .filter_map(|e| e.ok())
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if name.starts_with('.') {
-                        return None;
-                    }
-                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                    if is_dir {
-                        return Some((name, true));
-                    }
-                    // Filter image files only.
-                    let lower = name.to_lowercase();
-                    if lower.ends_with(".png") || lower.ends_with(".jpg")
-                        || lower.ends_with(".jpeg") || lower.ends_with(".webp")
-                        || lower.ends_with(".gif") || lower.ends_with(".bmp")
-                    {
-                        Some((name, false))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            // Sort: directories first, then files, alphabetically.
-            items.sort_by(|a, b| match (a.1, b.1) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.0.to_lowercase().cmp(&b.0.to_lowercase()),
-            });
-            self.import_entries.extend(items);
-        }
-    }
 
     /// Load an image file and set it as the imported image.
     /// Applies EXIF orientation automatically.
@@ -1826,6 +1823,11 @@ fn run_main_loop(
     let mut last_person_mask: Option<Vec<bool>> = None;
     let mut prev_raw_mask: Option<Vec<bool>> = None;
 
+    // Trichrome: ring buffer of past frames for RGB channel separation.
+    let mut trichrome_buf: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
+    // Trichrome: ring buffer of past masks (parallel to trichrome_buf).
+    let mut trichrome_mask_buf: std::collections::VecDeque<Option<Vec<bool>>> = std::collections::VecDeque::new();
+
     // Try to initialize segmenter if Person mode is already active.
     if app.config.bg_mode == crate::render::BgMode::Person {
         let path = crate::segmentation::default_model_path();
@@ -1890,6 +1892,15 @@ fn run_main_loop(
             }
         }
 
+        // Trichrome preview timeout for non-plus users.
+        if let Some(start) = app.trichrome_preview_start {
+            if start.elapsed().as_secs() >= 10 {
+                app.trichrome = 0;
+                app.trichrome_preview_start = None;
+                app.flash("preview ended — press [u] to unlock trichrome".into());
+            }
+        }
+
         // Drain latest remote frame from channel (non-blocking).
         if let Some(ref rx) = app.remote_rx {
             while let Ok(grid) = rx.try_recv() {
@@ -1914,6 +1925,19 @@ fn run_main_loop(
         } else {
             (camera.frame_rgb(), false)
         };
+
+        // Clear trichrome buffer on setting changes (bg/contour toggle).
+        if app.trichrome_clear {
+            trichrome_buf.clear();
+            trichrome_mask_buf.clear();
+            app.trichrome_clear = false;
+        }
+
+        let trichrome_delay = app.trichrome as usize;
+        if trichrome_delay == 0 {
+            trichrome_buf.clear();
+            trichrome_mask_buf.clear();
+        }
 
         // Lazily init/teardown segmenter based on BgMode or contour.
         let needs_segmenter = app.config.bg_mode == crate::render::BgMode::Person || app.config.contour;
@@ -1966,6 +1990,72 @@ fn run_main_loop(
             }
         } else {
             None
+        };
+
+        // Trichrome: blend RGB channels from different frames.
+        // Each frame in the buffer has its own mask pre-applied, so channel
+        // separation doesn't cause mask boundary flickering.
+        let (frame_data, fg_mask_buf) = if trichrome_delay > 0 && !import_active {
+            if let Ok((rgb, w, h)) = frame_data {
+                let buf_size = trichrome_delay * 2 + 1;
+
+                // Apply current mask to current frame before storing.
+                let masked_rgb = if let Some(ref mask) = fg_mask_buf {
+                    let mut m = rgb.clone();
+                    for i in 0..(w * h) as usize {
+                        if !mask.get(i).copied().unwrap_or(true) {
+                            m[i * 3] = 0;
+                            m[i * 3 + 1] = 0;
+                            m[i * 3 + 2] = 0;
+                        }
+                    }
+                    m
+                } else {
+                    rgb.clone()
+                };
+
+                trichrome_buf.push_back(masked_rgb);
+                trichrome_mask_buf.push_back(fg_mask_buf);
+                while trichrome_buf.len() > buf_size {
+                    trichrome_buf.pop_front();
+                    trichrome_mask_buf.pop_front();
+                }
+
+                let len = rgb.len();
+                let cur = trichrome_buf.len().saturating_sub(1);
+                let g_idx = cur.saturating_sub(trichrome_delay);
+                let b_idx = cur.saturating_sub(trichrome_delay * 2);
+                let r_frame = &trichrome_buf[cur];
+                let g_frame = &trichrome_buf[g_idx];
+                let b_frame = &trichrome_buf[b_idx];
+                let mut blended = vec![0u8; len];
+                for i in (0..len).step_by(3) {
+                    blended[i] = r_frame[i];         // R from current
+                    blended[i + 1] = g_frame[i + 1]; // G from N frames ago
+                    blended[i + 2] = b_frame[i + 2]; // B from 2N frames ago
+                }
+
+                // Merge masks: pixel is foreground if ANY of the 3 masks says so.
+                let merged_mask: Option<Vec<bool>> = {
+                    let masks: Vec<&Vec<bool>> = [cur, g_idx, b_idx].iter()
+                        .filter_map(|&idx| trichrome_mask_buf.get(idx).and_then(|m| m.as_ref()))
+                        .collect();
+                    if masks.is_empty() {
+                        None
+                    } else {
+                        let pixel_count = (w * h) as usize;
+                        Some((0..pixel_count).map(|i| {
+                            masks.iter().any(|m| m.get(i).copied().unwrap_or(true))
+                        }).collect())
+                    }
+                };
+
+                (Ok((blended, w, h)), merged_mask)
+            } else {
+                (frame_data, fg_mask_buf)
+            }
+        } else {
+            (frame_data, fg_mask_buf)
         };
 
         let in_call = matches!(app.mode, AppMode::Call { .. });
@@ -2126,6 +2216,7 @@ fn run_main_loop(
         let pref_dir_entries = app.pref_dir_entries.clone();
         let pref_dir_cursor = app.pref_dir_cursor;
         let connect_input = app.connect_input.clone();
+        let mut file_picker = app.file_picker.take();
         let app_mode = app.mode.clone();
         let relay_code = app.relay_code.clone();
         let remote_status = app.remote_status;
@@ -2215,7 +2306,7 @@ fn run_main_loop(
                     render_panels(f, video_area, open_panel, panel_cursor, current_style,
                         color_on, bg_mode, app.config.mirror, brightness,
                         pref_editing, &pref_input, pref_save_dir.as_deref(),
-                        &pref_dir_entries, pref_dir_cursor, &connect_input, app);
+                        &pref_dir_entries, pref_dir_cursor, &connect_input, app, &mut file_picker);
                 }
                 AppMode::Call { peer_addr } => {
                     // FaceTime layout: remote = full screen, local = PIP top-right.
@@ -2343,7 +2434,7 @@ fn run_main_loop(
                     render_panels(f, video_area, open_panel, panel_cursor, current_style,
                         color_on, bg_mode, app.config.mirror, brightness,
                         pref_editing, &pref_input, pref_save_dir.as_deref(),
-                        &pref_dir_entries, pref_dir_cursor, &connect_input, app);
+                        &pref_dir_entries, pref_dir_cursor, &connect_input, app, &mut file_picker);
                 }
             }
 
@@ -2405,6 +2496,9 @@ fn run_main_loop(
                 _ => {}
             }
         })?;
+
+        // Restore file picker state after draw.
+        app.file_picker = file_picker;
 
         // FPS counter.
         frames_since_update += 1;
@@ -2526,7 +2620,14 @@ fn build_menu_title(open_panel: Option<Panel>, current_style: VisualStyle, fps: 
     let left = Line::from(spans);
 
     let help_style = if show_help { highlight } else { normal };
-    let right = Line::from(vec![Span::styled(" [`]help ", help_style)]);
+    let mut right_spans: Vec<Span<'static>> = Vec::new();
+    if !crate::config::is_plus() {
+        right_spans.push(Span::styled("[", normal));
+        right_spans.push(Span::styled("u", Style::default().fg(Color::Yellow)));
+        right_spans.push(Span::styled("]txxxt+ ", normal));
+    }
+    right_spans.push(Span::styled(" [`]help ", help_style));
+    let right = Line::from(right_spans);
 
     (left, right)
 }
@@ -2593,6 +2694,7 @@ fn render_panels(
     pref_dir_cursor: Option<usize>,
     connect_input: &str,
     app: &App,
+    file_picker: &mut Option<ratatree::FilePickerState>,
 ) {
     match open_panel {
         Some(Panel::StylePicker) => {
@@ -2614,7 +2716,7 @@ fn render_panels(
             render_friends_panel(f, area, app);
         }
         Some(Panel::Import) => {
-            render_import_panel(f, area, app);
+            render_import_panel(f, area, file_picker);
         }
         None => {}
     }
@@ -2689,6 +2791,11 @@ fn render_settings_panel(
                 SettingsItem::Mirror => (if mirror_on { "ON".into() } else { "OFF".into() }, false),
                 SettingsItem::Brightness => (format!("◀ {} ▶", brightness), false),
                 SettingsItem::Contrast => (format!("◀ {:.1} ▶", app.config.gamma), false),
+                SettingsItem::Trichrome => {
+                    let is_plus = crate::config::is_plus();
+                    let suffix = if is_plus { "" } else { " ✦" };
+                    (format!("◀ {} ▶{}", app.trichrome, suffix), !is_plus)
+                }
                 SettingsItem::ImportFit => (format!("◀ {} ▶", app.import_fit.label()), false),
                 SettingsItem::ImportScale => (format!("◀ {}% ▶", app.import_scale), false),
                 SettingsItem::ImportRotate => (format!("◀ {}° ▶", app.import_rotation), false),
@@ -2973,7 +3080,7 @@ fn render_incoming_call_popup(f: &mut ratatui::Frame, view_area: Rect, caller: &
 /// Render the account panel overlay.
 fn render_account_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let logged_in = crate::config::get_account();
-    let panel_w: u16 = 48;
+    let panel_w: u16 = 52;
     let panel_h: u16 = if logged_in.is_some() { 6 } else { 12 };
     let x = area.x + menu_item_x(Panel::Account);
     let y = area.y + 1;
@@ -3010,7 +3117,7 @@ fn render_account_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Line::styled("  username:", Style::default().fg(Color::DarkGray)),
             Line::styled(format!("  > {}", &app.account_username_input), user_style),
             Line::raw(""),
-            Line::styled("  [Enter] register  [Tab] switch", Style::default().fg(Color::DarkGray)),
+            Line::styled("  [Enter] register  [Tab] switch  [Esc] close", Style::default().fg(Color::DarkGray)),
         ];
         if let Some(ref status) = app.account_status {
             lines.push(Line::styled(format!("  {}", status), Style::default().fg(Color::Yellow)));
@@ -3076,55 +3183,18 @@ fn render_friends_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(content, panel_rect);
 }
 
-/// Render the import file browser panel.
-fn render_import_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
+/// Render the import file browser panel (ratatree).
+fn render_import_panel(f: &mut ratatui::Frame, area: Rect, picker: &mut Option<ratatree::FilePickerState>) {
     let panel_w: u16 = 50.min(area.width.saturating_sub(4));
-    let visible_rows = 15usize;
-    let panel_h: u16 = (visible_rows as u16 + 3).min(area.height.saturating_sub(2)); // header + items + border
+    let panel_h: u16 = 18.min(area.height.saturating_sub(2));
     let x = area.x + menu_item_x(Panel::Import);
     let y = area.y + 1;
     let panel_rect = clamp_panel_rect(area, x, y, panel_w, panel_h);
     f.render_widget(Clear, panel_rect);
 
-    let dir_display = app.import_path.to_string_lossy().to_string();
-    let header_line = Line::from(vec![
-        Span::styled(" 📂 ", Style::default().fg(Color::Yellow)),
-        Span::styled(dir_display, Style::default().fg(Color::White)),
-    ]);
-
-    let mut lines: Vec<Line<'static>> = vec![header_line];
-
-    // Scroll window.
-    let total = app.import_entries.len();
-    let max_visible = (panel_h as usize).saturating_sub(3);
-    let scroll_offset = if app.import_selected >= max_visible {
-        app.import_selected - max_visible + 1
-    } else {
-        0
-    };
-
-    for (i, (name, is_dir)) in app.import_entries.iter().enumerate().skip(scroll_offset).take(max_visible) {
-        let selected = i == app.import_selected;
-        let icon = if *is_dir { "📁 " } else { "🖼  " };
-        let style = if selected {
-            Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(if *is_dir { Color::Cyan } else { Color::White })
-        };
-        lines.push(Line::from(Span::styled(format!(" {}{}", icon, name), style)));
+    if let Some(ref mut picker) = picker {
+        f.render_stateful_widget(ratatree::FilePicker::default(), panel_rect, picker);
     }
-
-    if total == 0 {
-        lines.push(Line::from(Span::styled(" (empty)", Style::default().fg(Color::DarkGray))));
-    }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(" import ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
-    let p = Paragraph::new(lines).block(block);
-    f.render_widget(p, panel_rect);
 }
 
 /// Render the help panel overlay (centered).
