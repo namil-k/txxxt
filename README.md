@@ -1,5 +1,5 @@
 > [!NOTE]
-> **Archived.** This project is no longer maintained. The relay server is shut down, so video calls no longer work.
+> The relay server has been shut down, so video calls no longer work. This project is no longer actively maintained.
 
 ```
 ...................................................................................
