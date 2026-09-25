@@ -1,5 +1,5 @@
 > [!NOTE]
-> **Archived.** This project was renamed from `txxxt` to `txxxt-ascii` and is no longer maintained. The relay server is shut down, so video calls no longer work. The `txxxt` name and txxxt.me domain are now used for a different service.
+> **Archived.** This project is no longer maintained. The relay server is shut down, so video calls no longer work.
 
 ```
 ...................................................................................
